@@ -357,15 +357,12 @@ with tab_rota:
             5: "background-color:#90EE9033;color:#B8F0B8",
             6: "background-color:#4CAF5033;color:#81C784",
         }
-
         def _style_criticidade(val):
             try:    return CORES_NIVEL.get(int(val), "")
             except: return ""
-
         def _style_atrasado(val):
             try:    return "color:#FF6B6B;font-weight:bold" if int(val) == 1 else "color:#81C784"
             except: return ""
-
         def _style_score(val):
             try:
                 v = float(val)
@@ -382,7 +379,6 @@ with tab_rota:
             styled = styled.map(_style_atrasado, subset=["FL_ATRASADO"])
         if "SCORE" in colunas_disponiveis:
             styled = styled.map(_style_score, subset=["SCORE"])
-
         st.dataframe(styled, use_container_width=True, hide_index=True)
         csv = df_rota[colunas_disponiveis].to_csv(index=False).encode("utf-8")
         st.download_button("📥 Exportar rota CSV", csv, "rota_inspecao.csv", "text/csv")
@@ -401,18 +397,22 @@ with tab_clima:
                     "Umidade (%)": info["umidade"],
                     "Vento (km/h)": info["vento_kmh"],
                     "Chuva (mm/h)": info["chuva_mm"],
-                    "Status":      "⛔ RISCO" if info["risco"] else "✅ OK",
+                    "_risco":      bool(info["risco"]),          # booleano interno
+                    "Status":      "RISCO" if info["risco"] else "OK",  # texto sem emoji
                 })
         df_clima = pd.DataFrame(dados_clima)
-        torres_risco = df_clima[df_clima["Status"] == "⛔ RISCO"]
-        if len(torres_risco):
+        n_risco = int(df_clima["_risco"].sum())                 # conta via booleano
+        if n_risco:
             _modo = st.session_state["modo_conservador"]
             st.markdown(
-                f'<div class="clima-alert">⛔ <b>{len(torres_risco)} torres</b> com condição climática adversa '
+                f'<div class="clima-alert">⛔ <b>{n_risco} torres</b> com condição climática adversa '
                 f'{"foram removidas da rota" if _modo else "estão na rota (modo não conservador)"}.</div>',
                 unsafe_allow_html=True,
             )
-        st.dataframe(df_clima, use_container_width=True, hide_index=True)
+        # Adiciona emoji só na exibição, depois de usar a coluna para filtro
+        df_exibir = df_clima.drop(columns=["_risco"]).copy()
+        df_exibir["Status"] = df_exibir["Status"].map({"RISCO": "⛔ RISCO", "OK": "✅ OK"})
+        st.dataframe(df_exibir, use_container_width=True, hide_index=True)
     else:
         st.info("Gere a rota para ver as condições climáticas.")
 
