@@ -218,14 +218,25 @@ with st.sidebar:
 
     try:
         opcoes = get_filter_options()
-        empresas    = ["Todas"] + opcoes["empresas"]
-        instalacoes = ["Todas"] + opcoes["instalacoes"]
+        empresas = ["Todas"] + opcoes["empresas"]
+        instalacoes_por_empresa = opcoes["instalacoes_por_empresa"]
     except Exception:
-        empresas    = ["Todas"]
-        instalacoes = ["Todas"]
+        empresas = ["Todas"]
+        instalacoes_por_empresa = {}
 
-    empresa_sel    = st.selectbox("Empresa", empresas)
-    instalacao_sel = st.selectbox("Instalação", instalacoes)
+    empresa_sel = st.selectbox("Empresa", empresas)
+
+    # Filtra instalações com base na empresa selecionada
+    if empresa_sel == "Todas":
+        # Todas as instalações de todas as empresas, sem duplicatas
+        todas = []
+        for lst in instalacoes_por_empresa.values():
+            todas.extend(lst)
+        lista_instalacoes = ["Todas"] + sorted(set(todas))
+    else:
+        lista_instalacoes = ["Todas"] + instalacoes_por_empresa.get(empresa_sel, [])
+
+    instalacao_sel = st.selectbox("Instalação", lista_instalacoes)
 
     st.divider()
     st.markdown("### ⚙️ Parâmetros da Rota")
