@@ -106,12 +106,40 @@ def build_map(
     center_lat = df_valido["LATITUDE"].mean()
     center_lon = df_valido["LONGITUDE"].mean()
 
+    # Mapa base: satélite Esri
     mapa = folium.Map(
         location=[center_lat, center_lon],
         zoom_start=8,
-        tiles="CartoDB dark_matter",
+        tiles=None,           # tiles adicionados manualmente para ter múltiplas camadas
         control_scale=True,
     )
+
+    # Camada satélite (padrão, já ativa)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri World Imagery",
+        name="🛰️ Satélite",
+        overlay=False,
+        control=True,
+    ).add_to(mapa)
+
+    # Camada de rótulos sobre o satélite (nomes de ruas/cidades)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri Reference",
+        name="🏷️ Rótulos",
+        overlay=True,
+        control=True,
+        opacity=0.8,
+    ).add_to(mapa)
+
+    # Camada escura opcional
+    folium.TileLayer(
+        tiles="CartoDB dark_matter",
+        name="🌑 Mapa escuro",
+        overlay=False,
+        control=True,
+    ).add_to(mapa)
 
     # ── Camada: todas as torres (fundo) ──
     layer_todas = folium.FeatureGroup(name="Todas as torres", show=True)
