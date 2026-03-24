@@ -11,7 +11,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_KEY  = os.getenv("OPENWEATHER_API_KEY")
+# Busca API_KEY: .env em dev local, st.secrets no Streamlit Cloud
+def _get_api_key() -> str:
+    key = os.getenv("OPENWEATHER_API_KEY")
+    if not key:
+        try:
+            key = st.secrets["OPENWEATHER_API_KEY"]
+        except Exception:
+            pass
+    return key or ""
+
 BASE_URL = "https://api.openweathermap.org/data/2.5/weather"
 
 # Limites para alertas de risco operacional
@@ -25,13 +34,21 @@ def get_weather(lat: float, lon: float) -> dict:
     Consulta clima atual para uma coordenada.
     Retorna dicionário padronizado com flag de risco.
     """
+    api_key = _get_api_key()
+    if not api_key:
+        return {
+            "ok":    False,
+            "erro":  "OPENWEATHER_API_KEY não configurada. Adicione nos Secrets do Streamlit Cloud ou no arquivo .env.",
+            "risco": False,
+        }
+
     try:
         resp = requests.get(
             BASE_URL,
             params={
                 "lat":   lat,
                 "lon":   lon,
-                "appid": API_KEY,
+                "appid": api_key,
                 "units": "metric",
                 "lang":  "pt_br",
             },
