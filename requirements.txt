@@ -9,3 +9,4 @@ pyodbc
 msal
 python-dotenv
 scipy
+matplotlib>=3.9.0
