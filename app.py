@@ -389,30 +389,38 @@ with tab_clima:
     if weather_map:
         dados_clima = []
         for cod, info in weather_map.items():
-            if info.get("ok"):
-                dados_clima.append({
-                    "Torre (COD_ATIVO)": cod,
-                    "Condição":    info["descricao"],
-                    "Temp (°C)":   info["temperatura"],
-                    "Umidade (%)": info["umidade"],
-                    "Vento (km/h)": info["vento_kmh"],
-                    "Chuva (mm/h)": info["chuva_mm"],
-                    "_risco":      bool(info["risco"]),          # booleano interno
-                    "Status":      "RISCO" if info["risco"] else "OK",  # texto sem emoji
-                })
-        df_clima = pd.DataFrame(dados_clima)
-        n_risco = int(df_clima["_risco"].sum())                 # conta via booleano
-        if n_risco:
-            _modo = st.session_state["modo_conservador"]
-            st.markdown(
-                f'<div class="clima-alert">⛔ <b>{n_risco} torres</b> com condição climática adversa '
-                f'{"foram removidas da rota" if _modo else "estão na rota (modo não conservador)"}.</div>',
-                unsafe_allow_html=True,
-            )
-        # Adiciona emoji só na exibição, depois de usar a coluna para filtro
-        df_exibir = df_clima.drop(columns=["_risco"]).copy()
-        df_exibir["Status"] = df_exibir["Status"].map({"RISCO": "⛔ RISCO", "OK": "✅ OK"})
-        st.dataframe(df_exibir, use_container_width=True, hide_index=True)
+            if not isinstance(info, dict):
+                continue
+            dados_clima.append({
+                "Torre (COD_ATIVO)": cod,
+                "Condição":    info.get("descricao", "N/D") if info.get("ok") else "Erro na consulta",
+                "Temp (°C)":   info.get("temperatura", "-"),
+                "Umidade (%)": info.get("umidade", "-"),
+                "Vento (km/h)": info.get("vento_kmh", "-"),
+                "Chuva (mm/h)": info.get("chuva_mm", "-"),
+                "risco_bool":  bool(info.get("risco", False)),
+                "Status":      "RISCO" if info.get("risco", False) else "OK",
+            })
+
+        if not dados_clima:
+            st.info("Nenhum dado climático disponível para as torres selecionadas.")
+        else:
+            df_clima = pd.DataFrame(dados_clima)
+
+            # Conta via coluna booleana — sem comparação de string com emoji
+            n_risco = int(df_clima["risco_bool"].sum())
+            if n_risco:
+                _modo = st.session_state["modo_conservador"]
+                st.markdown(
+                    f'<div class="clima-alert">⛔ <b>{n_risco} torres</b> com condição climática adversa '
+                    f'{"foram removidas da rota" if _modo else "estão na rota (modo não conservador)"}.</div>',
+                    unsafe_allow_html=True,
+                )
+
+            # Remove coluna auxiliar e adiciona emoji apenas para exibição
+            df_exibir = df_clima.drop(columns=["risco_bool"]).copy()
+            df_exibir["Status"] = df_exibir["Status"].replace({"RISCO": "⛔ RISCO", "OK": "✅ OK"})
+            st.dataframe(df_exibir, use_container_width=True, hide_index=True)
     else:
         st.info("Gere a rota para ver as condições climáticas.")
 
