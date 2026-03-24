@@ -167,6 +167,7 @@ for key, default in [
     ("fabric_authed", False),
     ("fabric_token", None),
     ("fabric_user", None),
+    ("modo_conservador", True),   # FIX: inicializado aqui para estar sempre disponível
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -229,6 +230,8 @@ with st.sidebar:
         value=True,
         help="Remove torres com chuva forte ou vento acima de 36 km/h",
     )
+    # FIX: persiste na sessão para uso fora do bloco sidebar (ex: tab_clima)
+    st.session_state["modo_conservador"] = modo_conservador
 
     forcar_atrasadas = st.toggle(
         "🚨 Priorizar torres atrasadas",
@@ -277,9 +280,9 @@ if gerar:
             time.sleep(0.05)
         progress.empty()
 
-    df_filtrado    = aplicar_filtro_clima(df_scored, weather_map, modo_conservador)
+    df_filtrado     = aplicar_filtro_clima(df_scored, weather_map, modo_conservador)
     df_selecionadas = selecionar_torres(df_filtrado, max_torres, forcar_atrasadas)
-    df_rota        = otimizar_rota(df_selecionadas, ponto_partida)
+    df_rota         = otimizar_rota(df_selecionadas, ponto_partida)
 
     st.session_state.df_rota     = df_rota
     st.session_state.df_base     = df_raw
@@ -334,9 +337,10 @@ with tab_rota:
             df_rota[colunas_disponiveis].style
             .background_gradient(subset=["CRITICIDADE_MIN"], cmap="RdYlGn_r")
             .background_gradient(subset=["SCORE"], cmap="Blues")
-            .applymap(
+            # FIX: .applymap() foi removido no pandas 2.1+ — substituído por .map()
+            .map(
                 lambda v: "color: #FF6B6B; font-weight:bold" if v == 1 else "",
-                subset=["FL_ATRASADO"]
+                subset=["FL_ATRASADO"],
             ),
             use_container_width=True,
             hide_index=True,
@@ -363,9 +367,11 @@ with tab_clima:
         df_clima = pd.DataFrame(dados_clima)
         torres_risco = df_clima[df_clima["Status"] == "⛔ RISCO"]
         if len(torres_risco):
+            # FIX: modo_conservador lido da sessão — seguro fora do bloco sidebar
+            _modo = st.session_state["modo_conservador"]
             st.markdown(
                 f'<div class="clima-alert">⛔ <b>{len(torres_risco)} torres</b> com condição climática adversa '
-                f'{"foram removidas da rota" if modo_conservador else "estão na rota (modo não conservador)"}.</div>',
+                f'{"foram removidas da rota" if _modo else "estão na rota (modo não conservador)"}.</div>',
                 unsafe_allow_html=True,
             )
         st.dataframe(df_clima, use_container_width=True, hide_index=True)
