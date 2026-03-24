@@ -11,21 +11,32 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Busca API_KEY: .env em dev local, st.secrets no Streamlit Cloud
-def _get_api_key() -> str:
-    key = os.getenv("OPENWEATHER_API_KEY")
-    if not key:
-        try:
-            key = st.secrets["OPENWEATHER_API_KEY"]
-        except Exception:
-            pass
-    return key or ""
-
 BASE_URL = "https://api.openweathermap.org/data/2.5/weather"
 
 # Limites para alertas de risco operacional
 WIND_SPEED_LIMIT_MS  = 10.0   # m/s (~36 km/h) — acima = risco
 RAIN_VOLUME_LIMIT_MM = 5.0    # mm/h — acima = risco
+
+
+def _get_api_key() -> str:
+    """
+    Lê a API key em tempo de execução (não no import).
+    Ordem: variável de ambiente → st.secrets (Streamlit Cloud).
+    """
+    # 1. Variável de ambiente / .env (funciona localmente)
+    key = os.getenv("OPENWEATHER_API_KEY", "").strip()
+    if key:
+        return key
+
+    # 2. st.secrets (Streamlit Cloud) — lido em runtime, não no import
+    try:
+        key = st.secrets.get("OPENWEATHER_API_KEY", "").strip()
+        if key:
+            return key
+    except Exception:
+        pass
+
+    return ""
 
 
 @st.cache_data(ttl=1800, show_spinner=False)   # cache 30 min por coord
@@ -35,10 +46,11 @@ def get_weather(lat: float, lon: float) -> dict:
     Retorna dicionário padronizado com flag de risco.
     """
     api_key = _get_api_key()
+
     if not api_key:
         return {
             "ok":    False,
-            "erro":  "OPENWEATHER_API_KEY não configurada. Adicione nos Secrets do Streamlit Cloud ou no arquivo .env.",
+            "erro":  "API_KEY não encontrada. Configure OPENWEATHER_API_KEY nos Secrets do Streamlit Cloud.",
             "risco": False,
         }
 
@@ -57,19 +69,18 @@ def get_weather(lat: float, lon: float) -> dict:
         resp.raise_for_status()
         data = resp.json()
 
-        wind_speed   = data.get("wind", {}).get("speed", 0.0)
-        rain_1h      = data.get("rain", {}).get("1h", 0.0)
-        description  = data["weather"][0]["description"].capitalize()
-        temp         = data["main"]["temp"]
-        humidity     = data["main"]["humidity"]
-        weather_id   = data["weather"][0]["id"]
+        wind_speed  = data.get("wind", {}).get("speed", 0.0)
+        rain_1h     = data.get("rain", {}).get("1h", 0.0)
+        description = data["weather"][0]["description"].capitalize()
+        temp        = data["main"]["temp"]
+        humidity    = data["main"]["humidity"]
+        weather_id  = data["weather"][0]["id"]
 
-        # Condições que impedem inspeção
         has_risk = (
             wind_speed > WIND_SPEED_LIMIT_MS
             or rain_1h  > RAIN_VOLUME_LIMIT_MM
-            or weather_id in range(200, 300)   # tempestades
-            or weather_id in range(600, 700)   # neve
+            or weather_id in range(200, 300)
+            or weather_id in range(600, 700)
         )
 
         return {
@@ -98,8 +109,8 @@ def weather_badge(info: dict) -> str:
         return "❓"
     if info["risco"]:
         return "⛔"
-    if info["chuva_mm"] > 0:
+    if info.get("chuva_mm", 0) > 0:
         return "🌧️"
-    if info["vento_kmh"] > 20:
+    if info.get("vento_kmh", 0) > 20:
         return "💨"
     return "✅"
