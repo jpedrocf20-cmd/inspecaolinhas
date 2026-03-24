@@ -387,17 +387,35 @@ with tab_rota:
 
 with tab_clima:
     if weather_map:
+        # Verifica se há erro de API key em qualquer entrada
+        erros_api = [
+            info.get("erro", "") for info in weather_map.values()
+            if isinstance(info, dict) and not info.get("ok")
+        ]
+        if erros_api:
+            primeiro_erro = erros_api[0]
+            if "API_KEY" in primeiro_erro or "api key" in primeiro_erro.lower() or "401" in primeiro_erro:
+                st.error(
+                    "🔑 **Chave da API OpenWeather não configurada ou inválida.**\n\n"
+                    "**No Streamlit Cloud:** acesse *Settings → Secrets* e adicione:\n"
+                    "```\nOPENWEATHER_API_KEY = \"sua_chave_aqui\"\n```\n"
+                    "**Localmente:** adicione no arquivo `.env`:\n"
+                    "```\nOPENWEATHER_API_KEY=sua_chave_aqui\n```"
+                )
+            else:
+                st.warning(f"⚠️ Erro ao consultar clima: {primeiro_erro}")
+
         dados_clima = []
         for cod, info in weather_map.items():
             if not isinstance(info, dict):
                 continue
             dados_clima.append({
                 "Torre (COD_ATIVO)": cod,
-                "Condição":    info.get("descricao", "N/D") if info.get("ok") else "Erro na consulta",
-                "Temp (°C)":   info.get("temperatura", "-"),
-                "Umidade (%)": info.get("umidade", "-"),
-                "Vento (km/h)": info.get("vento_kmh", "-"),
-                "Chuva (mm/h)": info.get("chuva_mm", "-"),
+                "Condição":    info.get("descricao", "N/D") if info.get("ok") else f"❌ {info.get('erro', 'Erro')}",
+                "Temp (°C)":   info.get("temperatura", "-") if info.get("ok") else "-",
+                "Umidade (%)": info.get("umidade", "-") if info.get("ok") else "-",
+                "Vento (km/h)": info.get("vento_kmh", "-") if info.get("ok") else "-",
+                "Chuva (mm/h)": info.get("chuva_mm", "-") if info.get("ok") else "-",
                 "risco_bool":  bool(info.get("risco", False)),
                 "Status":      "RISCO" if info.get("risco", False) else "OK",
             })
@@ -406,8 +424,6 @@ with tab_clima:
             st.info("Nenhum dado climático disponível para as torres selecionadas.")
         else:
             df_clima = pd.DataFrame(dados_clima)
-
-            # Conta via coluna booleana — sem comparação de string com emoji
             n_risco = int(df_clima["risco_bool"].sum())
             if n_risco:
                 _modo = st.session_state["modo_conservador"]
@@ -416,8 +432,6 @@ with tab_clima:
                     f'{"foram removidas da rota" if _modo else "estão na rota (modo não conservador)"}.</div>',
                     unsafe_allow_html=True,
                 )
-
-            # Remove coluna auxiliar e adiciona emoji apenas para exibição
             df_exibir = df_clima.drop(columns=["risco_bool"]).copy()
             df_exibir["Status"] = df_exibir["Status"].replace({"RISCO": "⛔ RISCO", "OK": "✅ OK"})
             st.dataframe(df_exibir, use_container_width=True, hide_index=True)
@@ -439,7 +453,27 @@ with tab_ocorrencias:
                 if df_oc.empty:
                     st.info("Nenhuma ocorrência pendente para esta torre.")
                 else:
-                    st.dataframe(df_oc, use_container_width=True, hide_index=True)
+                    # Renomeia colunas para exibição amigável
+                    rename_map = {
+                        "COD_SS":           "Cód. SS",
+                        "COD_ATIVO":        "Ativo",
+                        "NOME_PRIORIDADE":  "Prioridade",
+                        "NIVEL_CRITICIDADE":"Criticidade",
+                        "DIAS_EM_ABERTO":   "Dias em aberto",
+                        "PRAZO_DIAS":       "Prazo (dias)",
+                        "SALDO_DIAS":       "Saldo (dias)",
+                        "STATUS_PRAZO":     "Status do prazo",
+                        "DESCRICAO_SS":     "Descrição",
+                        "DESCRICAO":        "Descrição",
+                        "DESC_SS":          "Descrição",
+                        "OBSERVACAO":       "Observação",
+                        "DETALHE":          "Detalhe",
+                        "TEXTO_SS":         "Texto SS",
+                    }
+                    df_exibir_oc = df_oc.rename(columns={
+                        k: v for k, v in rename_map.items() if k in df_oc.columns
+                    })
+                    st.dataframe(df_exibir_oc, use_container_width=True, hide_index=True)
             except Exception as e:
                 st.error(f"Erro ao carregar ocorrências: {e}")
     else:
