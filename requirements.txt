@@ -1,0 +1,15 @@
+streamlit==1.35.0
+pandas==2.2.2
+requests==2.32.3
+folium==0.17.0
+streamlit-folium==0.20.0
+pyodbc==5.1.0
+sqlalchemy==2.0.30
+python-dotenv==1.0.1
+networkx==3.3
+numpy==1.26.4
+msal==1.28.0
+azure-keyvault-secrets==4.8.0
+azure-identity==1.17.1
+plotly==5.22.0
+scipy==1.13.1
