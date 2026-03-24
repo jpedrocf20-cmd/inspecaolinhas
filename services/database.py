@@ -176,7 +176,11 @@ def load_ocorrencias(cod_ativo: str | None = None) -> pd.DataFrame:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_filter_options() -> dict:
-    """Retorna listas distintas de empresas e instalações para os filtros da sidebar."""
+    """
+    Retorna:
+      - 'empresas': lista ordenada de empresas
+      - 'instalacoes_por_empresa': dict {empresa: [instalacoes]} para filtragem encadeada
+    """
     query = """
         SELECT DISTINCT EMPRESA, INSTALACAO
         FROM VIEW_COORD_TORRES
@@ -185,7 +189,16 @@ def get_filter_options() -> dict:
     """
     with _build_connection() as conn:
         df = pd.read_sql(query, conn)
+
+    df = df.dropna(subset=["EMPRESA", "INSTALACAO"])
+    empresas = sorted(df["EMPRESA"].unique().tolist())
+
+    instalacoes_por_empresa = {
+        emp: sorted(df.loc[df["EMPRESA"] == emp, "INSTALACAO"].unique().tolist())
+        for emp in empresas
+    }
+
     return {
-        "empresas":    sorted(df["EMPRESA"].dropna().unique().tolist()),
-        "instalacoes": sorted(df["INSTALACAO"].dropna().unique().tolist()),
+        "empresas": empresas,
+        "instalacoes_por_empresa": instalacoes_por_empresa,
     }
