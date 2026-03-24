@@ -7,7 +7,10 @@ import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 
-from services.database import load_torres_criticidade, get_filter_options
+from services.database import (
+    login_fabric, is_authenticated,
+    load_torres_criticidade, get_filter_options,
+)
 from services.weather  import get_weather, weather_badge
 from components.mapa   import build_map
 from utils.routing     import (
@@ -39,19 +42,16 @@ st.markdown("""
         font-family: 'Inter', sans-serif;
     }
 
-    /* Fundo escuro industrial */
     .stApp {
         background: #0D0F14;
         color: #E8EAF0;
     }
 
-    /* Sidebar */
     [data-testid="stSidebar"] {
         background: #13161D;
         border-right: 1px solid #1E2330;
     }
 
-    /* Métricas */
     [data-testid="metric-container"] {
         background: #13161D;
         border: 1px solid #1E2330;
@@ -70,7 +70,6 @@ st.markdown("""
         color: #00CFFF !important;
     }
 
-    /* Título principal */
     .app-title {
         font-family: 'Space Mono', monospace;
         font-size: 22px;
@@ -82,7 +81,6 @@ st.markdown("""
         margin-bottom: 20px;
     }
 
-    /* Badge de risco */
     .badge-risco {
         background: #FF2D2D22;
         color: #FF6B6B;
@@ -102,7 +100,6 @@ st.markdown("""
         font-weight: 600;
     }
 
-    /* Botão primário */
     .stButton > button[kind="primary"] {
         background: linear-gradient(135deg, #00CFFF, #0080FF);
         color: #0D0F14;
@@ -119,13 +116,11 @@ st.markdown("""
         transform: translateY(-1px);
     }
 
-    /* Tabela */
     [data-testid="stDataFrame"] {
         border: 1px solid #1E2330;
         border-radius: 8px;
     }
 
-    /* Abas */
     .stTabs [data-baseweb="tab-list"] {
         background: #13161D;
         border-radius: 8px 8px 0 0;
@@ -141,7 +136,6 @@ st.markdown("""
         border-bottom: 2px solid #00CFFF;
     }
 
-    /* Alerta de risco climático */
     .clima-alert {
         background: #FF6B2D15;
         border-left: 3px solid #FF6B2D;
@@ -150,16 +144,68 @@ st.markdown("""
         font-size: 13px;
         margin: 8px 0;
     }
+
+    .login-box {
+        background: #13161D;
+        border: 1px solid #1E2330;
+        border-radius: 10px;
+        padding: 20px;
+        margin-top: 12px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ──────────────────────────────────────────────
-# SIDEBAR — FILTROS E CONFIGURAÇÕES
+# ESTADO DA SESSÃO
+# ──────────────────────────────────────────────
+for key, default in [
+    ("df_rota", None),
+    ("df_base", None),
+    ("weather_map", {}),
+    ("resumo", {}),
+    ("fabric_authed", False),
+    ("fabric_token", None),
+    ("fabric_user", None),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+
+# ──────────────────────────────────────────────
+# SIDEBAR
 # ──────────────────────────────────────────────
 with st.sidebar:
     st.markdown('<div class="app-title">⚡ INSPEÇÃO<br>LINHAS DE TRANSMISSÃO</div>', unsafe_allow_html=True)
 
+    # ── LOGIN ──
+    if not is_authenticated():
+        st.markdown("### 🔐 Login Energisa")
+        st.caption("Use seu e-mail e senha corporativos.")
+        email_input = st.text_input("E-mail", placeholder="joao@energisa.com.br")
+        senha_input = st.text_input("Senha", type="password")
+        if st.button("Entrar", type="primary"):
+            if not email_input or not senha_input:
+                st.error("Preencha e-mail e senha.")
+            else:
+                with st.spinner("Autenticando..."):
+                    try:
+                        login_fabric(email_input, senha_input)
+                        st.success("✅ Autenticado!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ {e}")
+        st.stop()
+
+    # ── USUÁRIO LOGADO ──
+    st.success(f"✅ {st.session_state['fabric_user']}")
+    if st.button("Sair"):
+        for k in ["fabric_authed", "fabric_token", "fabric_user",
+                  "df_rota", "df_base", "weather_map", "resumo"]:
+            st.session_state[k] = None if k != "fabric_authed" else False
+        st.rerun()
+
+    st.divider()
     st.markdown("### 🔍 Filtros")
 
     try:
@@ -201,15 +247,6 @@ with st.sidebar:
 
 
 # ──────────────────────────────────────────────
-# ESTADO DA SESSÃO
-# ──────────────────────────────────────────────
-if "df_rota"     not in st.session_state: st.session_state.df_rota     = None
-if "df_base"     not in st.session_state: st.session_state.df_base     = None
-if "weather_map" not in st.session_state: st.session_state.weather_map = {}
-if "resumo"      not in st.session_state: st.session_state.resumo      = {}
-
-
-# ──────────────────────────────────────────────
 # LÓGICA PRINCIPAL — ao clicar em "Gerar Rota"
 # ──────────────────────────────────────────────
 if gerar:
@@ -227,10 +264,8 @@ if gerar:
         st.warning("Nenhuma torre encontrada com os filtros selecionados.")
         st.stop()
 
-    # Calcular score
     df_scored = calcular_score(df_raw)
 
-    # Buscar clima para as torres candidatas (top 50 por score para limitar chamadas)
     candidatas = df_scored.nlargest(50, "SCORE")
     weather_map: dict = {}
 
@@ -239,19 +274,13 @@ if gerar:
         for i, (_, row) in enumerate(candidatas.iterrows()):
             weather_map[row["COD_ATIVO"]] = get_weather(row["LATITUDE"], row["LONGITUDE"])
             progress.progress((i + 1) / len(candidatas))
-            time.sleep(0.05)  # evita rate limit
+            time.sleep(0.05)
         progress.empty()
 
-    # Filtro climático
-    df_filtrado = aplicar_filtro_clima(df_scored, weather_map, modo_conservador)
-
-    # Selecionar torres
+    df_filtrado    = aplicar_filtro_clima(df_scored, weather_map, modo_conservador)
     df_selecionadas = selecionar_torres(df_filtrado, max_torres, forcar_atrasadas)
+    df_rota        = otimizar_rota(df_selecionadas, ponto_partida)
 
-    # Otimizar sequência
-    df_rota = otimizar_rota(df_selecionadas, ponto_partida)
-
-    # Salvar no estado
     st.session_state.df_rota     = df_rota
     st.session_state.df_base     = df_raw
     st.session_state.weather_map = weather_map
@@ -266,7 +295,6 @@ df_base     = st.session_state.df_base
 weather_map = st.session_state.weather_map
 resumo      = st.session_state.resumo
 
-# Métricas no topo
 if resumo:
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("🗼 Torres na rota",     resumo["total_torres"])
@@ -276,7 +304,6 @@ if resumo:
     c5.metric("📊 Score médio",        resumo["score_medio"])
     st.divider()
 
-# Abas
 tab_mapa, tab_rota, tab_clima, tab_ocorrencias = st.tabs([
     "🗺️  Mapa",
     "📋  Rota detalhada",
@@ -284,34 +311,25 @@ tab_mapa, tab_rota, tab_clima, tab_ocorrencias = st.tabs([
     "⚠️  Ocorrências",
 ])
 
-# ── TAB: MAPA ──
 with tab_mapa:
     if df_base is not None:
-        mapa = build_map(
-            df       = df_base,
-            df_rota  = df_rota,
-            weather_map = weather_map,
-        )
+        mapa = build_map(df=df_base, df_rota=df_rota, weather_map=weather_map)
         st_folium(mapa, use_container_width=True, height=580)
     else:
         st.info("👈 Configure os filtros e clique em **Gerar Rota Otimizada** para visualizar o mapa.")
-        # Mapa vazio de boas-vindas
         import folium
         mapa_vazio = folium.Map(location=[-15.8, -47.9], zoom_start=4, tiles="CartoDB dark_matter")
         st_folium(mapa_vazio, use_container_width=True, height=500)
 
-# ── TAB: ROTA DETALHADA ──
 with tab_rota:
     if df_rota is not None:
         st.markdown(f"#### Rota com {len(df_rota)} torres — distância total: **{resumo['distancia_total']} km**")
-
         colunas_exibir = [
             "ORDEM_VISITA", "COD_ATIVO", "NUM_TORRE", "EMPRESA", "INSTALACAO",
             "CRITICIDADE_MIN", "QTD_SS", "PIOR_SALDO_DIAS", "FL_ATRASADO",
             "SCORE", "DIST_PROX_KM", "DIST_ACUM_KM",
         ]
         colunas_disponiveis = [c for c in colunas_exibir if c in df_rota.columns]
-
         st.dataframe(
             df_rota[colunas_disponiveis].style
             .background_gradient(subset=["CRITICIDADE_MIN"], cmap="RdYlGn_r")
@@ -323,14 +341,11 @@ with tab_rota:
             use_container_width=True,
             hide_index=True,
         )
-
-        # Download CSV
         csv = df_rota[colunas_disponiveis].to_csv(index=False).encode("utf-8")
         st.download_button("📥 Exportar rota CSV", csv, "rota_inspecao.csv", "text/csv")
     else:
         st.info("Gere a rota para ver o detalhamento aqui.")
 
-# ── TAB: CLIMA ──
 with tab_clima:
     if weather_map:
         dados_clima = []
@@ -345,10 +360,7 @@ with tab_clima:
                     "Chuva (mm/h)": info["chuva_mm"],
                     "Status":      "⛔ RISCO" if info["risco"] else "✅ OK",
                 })
-
         df_clima = pd.DataFrame(dados_clima)
-
-        # Alerta geral
         torres_risco = df_clima[df_clima["Status"] == "⛔ RISCO"]
         if len(torres_risco):
             st.markdown(
@@ -356,12 +368,10 @@ with tab_clima:
                 f'{"foram removidas da rota" if modo_conservador else "estão na rota (modo não conservador)"}.</div>',
                 unsafe_allow_html=True,
             )
-
         st.dataframe(df_clima, use_container_width=True, hide_index=True)
     else:
         st.info("Gere a rota para ver as condições climáticas.")
 
-# ── TAB: OCORRÊNCIAS ──
 with tab_ocorrencias:
     if df_rota is not None:
         torre_sel = st.selectbox(
