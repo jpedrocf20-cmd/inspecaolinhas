@@ -1,8 +1,7 @@
 """
 services/database.py
-Conexão com Microsoft Fabric usando login corporativo (e-mail + senha OAuth2).
-Driver: pyodbc com token Bearer — único método compatível com Fabric SQL Endpoint.
-Credenciais digitadas pelo usuário na sidebar — nunca salvas em disco.
+Conexão com Microsoft Fabric usando Device Code Flow (suporta MFA obrigatório).
+O usuário autentica pelo navegador — o app nunca toca na senha.
 """
 
 import struct
@@ -19,66 +18,82 @@ FABRIC_DATABASE = "SGM"
 FABRIC_PORT     = 1433
 
 # App público "Microsoft Azure PowerShell" — aceito por qualquer tenant corporativo.
-# Não exige cadastro de Service Principal.
 _PUBLIC_CLIENT_ID = "1950a258-227b-4e31-a9cf-717495945fc2"
 _SCOPE            = ["https://database.windows.net/user_impersonation"]
-
-# Driver ODBC — nome exato instalado no ambiente Linux do Streamlit Cloud
-_ODBC_DRIVER = "ODBC Driver 17 for SQL Server"
+_ODBC_DRIVER      = "ODBC Driver 17 for SQL Server"
 
 
 # ──────────────────────────────────────────────
-# AUTENTICAÇÃO
+# AUTENTICAÇÃO — Device Code Flow (suporta MFA)
 # ──────────────────────────────────────────────
 
-def _get_token(email: str, senha: str) -> str:
+def iniciar_device_flow() -> dict:
     """
-    Autentica com e-mail + senha corporativa via MSAL e retorna access_token.
-    Lança RuntimeError com mensagem legível em caso de falha.
+    Passo 1: Inicia o Device Code Flow.
+    Retorna o dict do flow com 'user_code' e 'verification_uri'.
+    Salva o app MSAL na sessão para uso no passo 2.
     """
     app = PublicClientApplication(
         _PUBLIC_CLIENT_ID,
         authority="https://login.microsoftonline.com/organizations",
     )
+    st.session_state["_msal_app"] = app
 
-    # Tenta silenciosamente primeiro (cache), depois com credencial
-    accounts = app.get_accounts(username=email)
-    result = None
-    if accounts:
-        result = app.acquire_token_silent(_SCOPE, account=accounts[0])
+    flow = app.initiate_device_flow(scopes=_SCOPE)
+    if "user_code" not in flow:
+        erro = flow.get("error_description") or flow.get("error") or str(flow)
+        raise RuntimeError(f"Não foi possível iniciar o login: {erro}")
 
-    if not result:
-        result = app.acquire_token_by_username_password(
-            username=email,
-            password=senha,
-            scopes=_SCOPE,
-        )
+    # Salva o flow na sessão para o passo 2
+    st.session_state["_device_flow"] = flow
+    return flow
+
+
+def concluir_login() -> bool:
+    """
+    Passo 2: Aguarda confirmação do usuário e troca o device code pelo token.
+    Deve ser chamado após o usuário clicar em 'Já autentiquei'.
+    Salva o token na sessão e retorna True se OK, levanta RuntimeError se falhou.
+    """
+    app  = st.session_state.get("_msal_app")
+    flow = st.session_state.get("_device_flow")
+
+    if not app or not flow:
+        raise RuntimeError("Sessão expirada. Clique em 'Iniciar Login' novamente.")
+
+    # timeout=0 → não bloqueia; tenta uma vez e retorna imediatamente
+    result = app.acquire_token_by_device_flow(flow, exit_condition=lambda f: True)
 
     if "access_token" not in result:
         erro = result.get("error_description") or result.get("error") or str(result)
-        raise RuntimeError(f"Falha na autenticação Microsoft: {erro}")
+        raise RuntimeError(f"Autenticação não concluída: {erro}")
 
-    return result["access_token"]
+    st.session_state["fabric_token"]  = result["access_token"]
+    st.session_state["fabric_user"]   = result.get("id_token_claims", {}).get("preferred_username", "Usuário")
+    st.session_state["fabric_authed"] = True
 
+    # Limpa dados temporários
+    st.session_state.pop("_msal_app", None)
+    st.session_state.pop("_device_flow", None)
+    return True
+
+
+def is_authenticated() -> bool:
+    return bool(st.session_state.get("fabric_authed"))
+
+
+# ──────────────────────────────────────────────
+# CONEXÃO COM O FABRIC
+# ──────────────────────────────────────────────
 
 def _token_para_bytes(token: str) -> bytes:
-    """
-    Converte o access_token para o formato binário exigido pelo pyodbc
-    ao usar autenticação por token no SQL Server / Fabric.
-    Ref: https://docs.microsoft.com/en-us/sql/connect/odbc/using-azure-active-directory
-    """
+    """Converte access_token para formato binário exigido pelo pyodbc/ODBC 17."""
     token_bytes = token.encode("utf-16-le")
-    # Estrutura: cada byte do token empacotado como unsigned short (2 bytes)
-    token_struct = struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
-    return token_struct
+    return struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
 
 
 def _build_connection() -> pyodbc.Connection:
-    """
-    Abre conexão pyodbc com o Fabric usando o token OAuth2 da sessão.
-    O token é passado via atributo SQL_COPT_SS_ACCESS_TOKEN — método oficial
-    da Microsoft para autenticação AAD sem senha no driver ODBC 17+.
-    """
+    """Abre conexão pyodbc com o Fabric usando o token OAuth2 da sessão."""
     token = st.session_state.get("fabric_token")
     if not token:
         raise RuntimeError("Não autenticado. Faça login na sidebar.")
@@ -92,35 +107,12 @@ def _build_connection() -> pyodbc.Connection:
         "Connection Timeout=30;"
     )
 
-    # SQL_COPT_SS_ACCESS_TOKEN = 1256 (constante do driver ODBC da Microsoft)
     SQL_COPT_SS_ACCESS_TOKEN = 1256
-    token_bytes = _token_para_bytes(token)
-
     conn = pyodbc.connect(
         conn_str,
-        attrs_before={SQL_COPT_SS_ACCESS_TOKEN: token_bytes},
+        attrs_before={SQL_COPT_SS_ACCESS_TOKEN: _token_para_bytes(token)},
     )
     return conn
-
-
-# ──────────────────────────────────────────────
-# INTERFACE PÚBLICA DE AUTENTICAÇÃO
-# ──────────────────────────────────────────────
-
-def login_fabric(email: str, senha: str) -> bool:
-    """
-    Autentica com credenciais corporativas e salva o token na sessão.
-    Retorna True se OK, levanta RuntimeError se falhar.
-    """
-    token = _get_token(email, senha)
-    st.session_state["fabric_token"]  = token
-    st.session_state["fabric_user"]   = email
-    st.session_state["fabric_authed"] = True
-    return True
-
-
-def is_authenticated() -> bool:
-    return bool(st.session_state.get("fabric_authed"))
 
 
 # ──────────────────────────────────────────────
@@ -134,7 +126,6 @@ def load_torres_criticidade(
 ) -> pd.DataFrame:
     """Carrega torres com criticidade, aplicando filtros opcionais."""
     where_clauses = ["LATITUDE IS NOT NULL", "LONGITUDE IS NOT NULL"]
-
     params = []
     if empresa:
         where_clauses.append("EMPRESA = ?")
@@ -144,7 +135,6 @@ def load_torres_criticidade(
         params.append(instalacao)
 
     where = " AND ".join(where_clauses)
-
     query = f"""
         SELECT
             COD_ATIVO, EMPRESA, INSTALACAO, NUM_TORRE,
