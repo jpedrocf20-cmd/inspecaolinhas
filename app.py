@@ -349,17 +349,41 @@ with tab_rota:
             "SCORE", "DIST_PROX_KM", "DIST_ACUM_KM",
         ]
         colunas_disponiveis = [c for c in colunas_exibir if c in df_rota.columns]
-        st.dataframe(
-            df_rota[colunas_disponiveis].style
-            .background_gradient(subset=["CRITICIDADE_MIN"], cmap="RdYlGn_r")
-            .background_gradient(subset=["SCORE"], cmap="Blues")
-            .map(
-                lambda v: "color: #FF6B6B; font-weight:bold" if v == 1 else "",
-                subset=["FL_ATRASADO"],
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
+        CORES_NIVEL = {
+            1: "background-color:#FF2D2D33;color:#FF6B6B;font-weight:bold",
+            2: "background-color:#FF6B2D33;color:#FFA07A;font-weight:bold",
+            3: "background-color:#FFA50033;color:#FFC04D",
+            4: "background-color:#FFD70033;color:#FFE680",
+            5: "background-color:#90EE9033;color:#B8F0B8",
+            6: "background-color:#4CAF5033;color:#81C784",
+        }
+
+        def _style_criticidade(val):
+            try:    return CORES_NIVEL.get(int(val), "")
+            except: return ""
+
+        def _style_atrasado(val):
+            try:    return "color:#FF6B6B;font-weight:bold" if int(val) == 1 else "color:#81C784"
+            except: return ""
+
+        def _style_score(val):
+            try:
+                v = float(val)
+                if v >= 80: return "background-color:#00CFFF33;color:#00CFFF;font-weight:bold"
+                if v >= 50: return "background-color:#0080FF22;color:#7EC8FF"
+                return ""
+            except: return ""
+
+        df_display = df_rota[colunas_disponiveis].copy()
+        styled = df_display.style
+        if "CRITICIDADE_MIN" in colunas_disponiveis:
+            styled = styled.map(_style_criticidade, subset=["CRITICIDADE_MIN"])
+        if "FL_ATRASADO" in colunas_disponiveis:
+            styled = styled.map(_style_atrasado, subset=["FL_ATRASADO"])
+        if "SCORE" in colunas_disponiveis:
+            styled = styled.map(_style_score, subset=["SCORE"])
+
+        st.dataframe(styled, use_container_width=True, hide_index=True)
         csv = df_rota[colunas_disponiveis].to_csv(index=False).encode("utf-8")
         st.download_button("📥 Exportar rota CSV", csv, "rota_inspecao.csv", "text/csv")
     else:
