@@ -21,8 +21,21 @@ CORES_CRITICIDADE = {
 ICONE_ATRASADO = "⚠️"
 
 
-def _cor_criticidade(nivel: int) -> str:
-    return CORES_CRITICIDADE.get(int(nivel), "#999999")
+def _cor_criticidade(nivel) -> str:
+    """Retorna cor hex para o nível de criticidade. Trata NaN, float e valores fora do range."""
+    try:
+        nivel_int = int(float(nivel))
+    except (ValueError, TypeError):
+        return "#999999"
+    return CORES_CRITICIDADE.get(nivel_int, "#999999")
+
+
+def _safe_int(val, fallback="–") -> str:
+    """Converte valor para int string com segurança."""
+    try:
+        return str(int(float(val)))
+    except (ValueError, TypeError):
+        return str(fallback)
 
 
 def _popup_html(row: pd.Series, clima: dict | None) -> str:
@@ -40,9 +53,15 @@ def _popup_html(row: pd.Series, clima: dict | None) -> str:
         <b>Status:</b> {risco_badge}
         """
 
+    fl_atrasado = row.get("FL_ATRASADO")
+    try:
+        atrasado = int(float(fl_atrasado)) == 1
+    except (ValueError, TypeError):
+        atrasado = False
+
     atraso_badge = (
         "<span style='color:#FF2D2D;font-weight:bold'>⚠️ ATRASADO</span>"
-        if row.get("FL_ATRASADO") == 1
+        if atrasado
         else "<span style='color:#4CAF50'>✅ No prazo</span>"
     )
 
@@ -50,13 +69,13 @@ def _popup_html(row: pd.Series, clima: dict | None) -> str:
     <div style='font-family:sans-serif;font-size:13px;min-width:200px'>
         <div style='background:{cor};color:white;padding:6px 10px;border-radius:4px;
                     font-weight:bold;font-size:14px;margin-bottom:8px'>
-            Torre {row.get('NUM_TORRE','–')} &nbsp;|&nbsp; Nível {int(row['CRITICIDADE_MIN'])}
+            Torre {row.get('NUM_TORRE','–')} &nbsp;|&nbsp; Nível {_safe_int(row['CRITICIDADE_MIN'])}
         </div>
         <b>Ativo:</b> {row['COD_ATIVO']}<br>
         <b>Empresa:</b> {row.get('EMPRESA','–')}<br>
         <b>Instalação:</b> {row.get('INSTALACAO','–')}<br>
-        <b>Ocorrências:</b> {int(row['QTD_SS'])}<br>
-        <b>Maior atraso:</b> {int(row['PIOR_SALDO_DIAS'])} dias<br>
+        <b>Ocorrências:</b> {_safe_int(row.get('QTD_SS', 0))}<br>
+        <b>Maior atraso:</b> {_safe_int(row.get('PIOR_SALDO_DIAS', 0))} dias<br>
         <b>Status:</b> {atraso_badge}
         {clima_html}
     </div>
@@ -72,15 +91,20 @@ def build_map(
     """
     Constrói o mapa Folium.
 
-    df        : todas as torres (para mostrar contexto)
-    df_rota   : torres na rota otimizada (ordem de visita)
+    df         : todas as torres (para mostrar contexto)
+    df_rota    : torres na rota otimizada (ordem de visita)
     weather_map: { COD_ATIVO: dict do clima }
     """
     if df.empty:
         return folium.Map(location=[-15.8, -47.9], zoom_start=5)
 
-    center_lat = df["LATITUDE"].mean()
-    center_lon = df["LONGITUDE"].mean()
+    # Remove linhas sem coordenadas válidas antes de calcular centro
+    df_valido = df.dropna(subset=["LATITUDE", "LONGITUDE"])
+    if df_valido.empty:
+        return folium.Map(location=[-15.8, -47.9], zoom_start=5)
+
+    center_lat = df_valido["LATITUDE"].mean()
+    center_lon = df_valido["LONGITUDE"].mean()
 
     mapa = folium.Map(
         location=[center_lat, center_lon],
@@ -93,11 +117,10 @@ def build_map(
     layer_todas = folium.FeatureGroup(name="Todas as torres", show=True)
     container = MarkerCluster() if usar_cluster else layer_todas
 
-    for _, row in df.iterrows():
+    for _, row in df_valido.iterrows():
         cor   = _cor_criticidade(row["CRITICIDADE_MIN"])
         clima = (weather_map or {}).get(row["COD_ATIVO"])
 
-        # Ícone diferenciado para torres atrasadas
         icon_html = f"""
         <div style='
             background:{cor};
@@ -110,7 +133,7 @@ def build_map(
         folium.Marker(
             location=[row["LATITUDE"], row["LONGITUDE"]],
             popup=folium.Popup(_popup_html(row, clima), max_width=280),
-            tooltip=f"Torre {row.get('NUM_TORRE','?')} — Nível {int(row['CRITICIDADE_MIN'])}",
+            tooltip=f"Torre {row.get('NUM_TORRE','?')} — Nível {_safe_int(row['CRITICIDADE_MIN'])}",
             icon=folium.DivIcon(html=icon_html, icon_size=(14, 14), icon_anchor=(7, 7)),
         ).add_to(container if usar_cluster else layer_todas)
 
@@ -120,43 +143,45 @@ def build_map(
 
     # ── Camada: rota otimizada ──
     if df_rota is not None and not df_rota.empty:
-        layer_rota = folium.FeatureGroup(name="🗺️ Rota otimizada", show=True)
-        coords_rota = df_rota[["LATITUDE", "LONGITUDE"]].values.tolist()
+        df_rota_valida = df_rota.dropna(subset=["LATITUDE", "LONGITUDE"])
+        if not df_rota_valida.empty:
+            layer_rota = folium.FeatureGroup(name="🗺️ Rota otimizada", show=True)
+            coords_rota = df_rota_valida[["LATITUDE", "LONGITUDE"]].values.tolist()
 
-        # Linha da rota
-        folium.PolyLine(
-            coords_rota,
-            color="#00CFFF",
-            weight=2.5,
-            opacity=0.85,
-            dash_array="6 4",
-        ).add_to(layer_rota)
-
-        # Marcadores numerados da rota
-        for _, row in df_rota.iterrows():
-            ordem = int(row["ORDEM_VISITA"])
-            cor   = _cor_criticidade(row["CRITICIDADE_MIN"])
-            clima = (weather_map or {}).get(row["COD_ATIVO"])
-
-            icon_html = f"""
-            <div style='
-                background:{cor};
-                border:2.5px solid white;
-                border-radius:50%;
-                width:22px;height:22px;
-                display:flex;align-items:center;justify-content:center;
-                font-size:10px;font-weight:bold;color:white;
-                box-shadow:0 0 6px rgba(0,0,0,0.7);
-            '>{ordem}</div>
-            """
-            folium.Marker(
-                location=[row["LATITUDE"], row["LONGITUDE"]],
-                popup=folium.Popup(_popup_html(row, clima), max_width=280),
-                tooltip=f"#{ordem} — Torre {row.get('NUM_TORRE','?')}",
-                icon=folium.DivIcon(html=icon_html, icon_size=(22, 22), icon_anchor=(11, 11)),
+            # Linha da rota
+            folium.PolyLine(
+                coords_rota,
+                color="#00CFFF",
+                weight=2.5,
+                opacity=0.85,
+                dash_array="6 4",
             ).add_to(layer_rota)
 
-        layer_rota.add_to(mapa)
+            # Marcadores numerados da rota
+            for _, row in df_rota_valida.iterrows():
+                ordem = _safe_int(row.get("ORDEM_VISITA", "?"))
+                cor   = _cor_criticidade(row["CRITICIDADE_MIN"])
+                clima = (weather_map or {}).get(row["COD_ATIVO"])
+
+                icon_html = f"""
+                <div style='
+                    background:{cor};
+                    border:2.5px solid white;
+                    border-radius:50%;
+                    width:22px;height:22px;
+                    display:flex;align-items:center;justify-content:center;
+                    font-size:10px;font-weight:bold;color:white;
+                    box-shadow:0 0 6px rgba(0,0,0,0.7);
+                '>{ordem}</div>
+                """
+                folium.Marker(
+                    location=[row["LATITUDE"], row["LONGITUDE"]],
+                    popup=folium.Popup(_popup_html(row, clima), max_width=280),
+                    tooltip=f"#{ordem} — Torre {row.get('NUM_TORRE','?')}",
+                    icon=folium.DivIcon(html=icon_html, icon_size=(22, 22), icon_anchor=(11, 11)),
+                ).add_to(layer_rota)
+
+            layer_rota.add_to(mapa)
 
     # Legenda
     legenda_html = """
