@@ -372,13 +372,59 @@ with tab_rota:
             except: return ""
 
         df_display = df_rota[colunas_disponiveis].copy()
+
+        # ── Formata colunas numéricas — sem casas decimais desnecessárias ──
+        colunas_inteiras = ["ORDEM_VISITA", "NUM_TORRE", "CRITICIDADE_MIN",
+                            "QTD_SS", "PIOR_SALDO_DIAS", "FL_ATRASADO"]
+        colunas_float1   = ["DIST_PROX_KM", "DIST_ACUM_KM"]
+        colunas_float2   = ["SCORE"]
+
+        for col in colunas_inteiras:
+            if col in df_display.columns:
+                df_display[col] = df_display[col].apply(
+                    lambda v: str(int(float(v))) if str(v) not in ("None", "nan", "") and v is not None else "–"
+                )
+        for col in colunas_float1:
+            if col in df_display.columns:
+                df_display[col] = df_display[col].apply(
+                    lambda v: f"{float(v):.1f}" if str(v) not in ("None", "nan", "") and v is not None else "–"
+                )
+        for col in colunas_float2:
+            if col in df_display.columns:
+                df_display[col] = df_display[col].apply(
+                    lambda v: f"{float(v):.1f}" if str(v) not in ("None", "nan", "") and v is not None else "–"
+                )
+
+        # Renomeia colunas para nomes amigáveis
+        rename_rota = {
+            "ORDEM_VISITA":   "Ordem",
+            "COD_ATIVO":      "Ativo",
+            "NUM_TORRE":      "Torre",
+            "EMPRESA":        "Empresa",
+            "INSTALACAO":     "Instalação",
+            "CRITICIDADE_MIN":"Criticidade",
+            "QTD_SS":         "Qtd SS",
+            "PIOR_SALDO_DIAS":"Pior saldo (dias)",
+            "FL_ATRASADO":    "Atrasado",
+            "SCORE":          "Score",
+            "DIST_PROX_KM":   "Dist. próx (km)",
+            "DIST_ACUM_KM":   "Dist. acum (km)",
+        }
+        df_display = df_display.rename(columns={k: v for k, v in rename_rota.items() if k in df_display.columns})
+
+        # Reconstrói subset com nomes já renomeados
+        col_crit    = rename_rota.get("CRITICIDADE_MIN", "Criticidade")
+        col_atras   = rename_rota.get("FL_ATRASADO", "Atrasado")
+        col_score   = rename_rota.get("SCORE", "Score")
+
         styled = df_display.style
-        if "CRITICIDADE_MIN" in colunas_disponiveis:
-            styled = styled.map(_style_criticidade, subset=["CRITICIDADE_MIN"])
-        if "FL_ATRASADO" in colunas_disponiveis:
-            styled = styled.map(_style_atrasado, subset=["FL_ATRASADO"])
-        if "SCORE" in colunas_disponiveis:
-            styled = styled.map(_style_score, subset=["SCORE"])
+        if col_crit in df_display.columns:
+            styled = styled.map(_style_criticidade, subset=[col_crit])
+        if col_atras in df_display.columns:
+            styled = styled.map(_style_atrasado, subset=[col_atras])
+        if col_score in df_display.columns:
+            styled = styled.map(_style_score, subset=[col_score])
+
         st.dataframe(styled, use_container_width=True, hide_index=True)
         csv = df_rota[colunas_disponiveis].to_csv(index=False).encode("utf-8")
         st.download_button("📥 Exportar rota CSV", csv, "rota_inspecao.csv", "text/csv")
