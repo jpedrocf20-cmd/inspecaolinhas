@@ -151,27 +151,49 @@ def load_torres_criticidade(
 @st.cache_data(ttl=300, show_spinner=False)
 def load_ocorrencias(cod_ativo: str | None = None) -> pd.DataFrame:
     """Carrega ocorrências/SS abertas, opcionalmente filtradas por ativo."""
-    if cod_ativo:
-        query = """
-            SELECT
-                COD_SS, COD_ATIVO, NOME_PRIORIDADE, NIVEL_CRITICIDADE,
-                DIAS_EM_ABERTO, PRAZO_DIAS, SALDO_DIAS, STATUS_PRAZO
-            FROM VW_SS_TRATADA
-            WHERE COD_ATIVO = ?
-            ORDER BY NIVEL_CRITICIDADE ASC, SALDO_DIAS ASC
-        """
-        with _build_connection() as conn:
-            return pd.read_sql(query, conn, params=[cod_ativo])
-    else:
-        query = """
-            SELECT
-                COD_SS, COD_ATIVO, NOME_PRIORIDADE, NIVEL_CRITICIDADE,
-                DIAS_EM_ABERTO, PRAZO_DIAS, SALDO_DIAS, STATUS_PRAZO
-            FROM VW_SS_TRATADA
-            ORDER BY NIVEL_CRITICIDADE ASC, SALDO_DIAS ASC
-        """
-        with _build_connection() as conn:
-            return pd.read_sql(query, conn)
+
+    # Descobre as colunas disponíveis na view para incluir descrição se existir
+    def _query_ocorrencias(conn, params=None):
+        try:
+            cols_df = pd.read_sql(
+                "SELECT TOP 0 * FROM VW_SS_TRATADA", conn
+            )
+            # Tenta nomes comuns para a coluna de descrição
+            col_desc = next(
+                (c for c in cols_df.columns
+                 if c.upper() in ("DESCRICAO_SS", "DESCRICAO", "DESC_SS",
+                                  "OBSERVACAO", "DETALHE", "TEXTO_SS")),
+                None
+            )
+        except Exception:
+            col_desc = None
+
+        select_desc = f", {col_desc}" if col_desc else ""
+
+        if params:
+            q = f"""
+                SELECT
+                    COD_SS, COD_ATIVO, NOME_PRIORIDADE, NIVEL_CRITICIDADE,
+                    DIAS_EM_ABERTO, PRAZO_DIAS, SALDO_DIAS, STATUS_PRAZO
+                    {select_desc}
+                FROM VW_SS_TRATADA
+                WHERE COD_ATIVO = ?
+                ORDER BY NIVEL_CRITICIDADE ASC, SALDO_DIAS ASC
+            """
+            return pd.read_sql(q, conn, params=params)
+        else:
+            q = f"""
+                SELECT
+                    COD_SS, COD_ATIVO, NOME_PRIORIDADE, NIVEL_CRITICIDADE,
+                    DIAS_EM_ABERTO, PRAZO_DIAS, SALDO_DIAS, STATUS_PRAZO
+                    {select_desc}
+                FROM VW_SS_TRATADA
+                ORDER BY NIVEL_CRITICIDADE ASC, SALDO_DIAS ASC
+            """
+            return pd.read_sql(q, conn)
+
+    with _build_connection() as conn:
+        return _query_ocorrencias(conn, params=[cod_ativo] if cod_ativo else None)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
