@@ -8,7 +8,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from services.database import (
-    login_fabric, is_authenticated,
+    iniciar_device_flow, concluir_login, is_authenticated,
     load_torres_criticidade, get_filter_options,
 )
 from services.weather  import get_weather, weather_badge
@@ -38,14 +38,9 @@ st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@300;400;600&display=swap');
 
-    html, body, [class*="css"] {
-        font-family: 'Inter', sans-serif;
-    }
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
-    .stApp {
-        background: #0D0F14;
-        color: #E8EAF0;
-    }
+    .stApp { background: #0D0F14; color: #E8EAF0; }
 
     [data-testid="stSidebar"] {
         background: #13161D;
@@ -81,23 +76,26 @@ st.markdown("""
         margin-bottom: 20px;
     }
 
-    .badge-risco {
-        background: #FF2D2D22;
-        color: #FF6B6B;
-        border: 1px solid #FF2D2D44;
-        border-radius: 4px;
-        padding: 2px 8px;
-        font-size: 11px;
-        font-weight: 600;
+    .login-box {
+        background: #13161D;
+        border: 1px solid #1E2330;
+        border-radius: 10px;
+        padding: 20px;
+        margin-top: 12px;
     }
-    .badge-ok {
-        background: #4CAF5022;
-        color: #81C784;
-        border: 1px solid #4CAF5044;
-        border-radius: 4px;
-        padding: 2px 8px;
-        font-size: 11px;
-        font-weight: 600;
+
+    .device-code {
+        background: #0D0F14;
+        border: 2px solid #00CFFF;
+        border-radius: 8px;
+        padding: 14px 20px;
+        font-family: 'Space Mono', monospace;
+        font-size: 26px;
+        font-weight: 700;
+        color: #00CFFF;
+        letter-spacing: 0.15em;
+        text-align: center;
+        margin: 12px 0;
     }
 
     .stButton > button[kind="primary"] {
@@ -111,30 +109,13 @@ st.markdown("""
         letter-spacing: 0.05em;
         width: 100%;
     }
-    .stButton > button[kind="primary"]:hover {
-        opacity: 0.9;
-        transform: translateY(-1px);
-    }
+    .stButton > button[kind="primary"]:hover { opacity: 0.9; transform: translateY(-1px); }
 
-    [data-testid="stDataFrame"] {
-        border: 1px solid #1E2330;
-        border-radius: 8px;
-    }
+    [data-testid="stDataFrame"] { border: 1px solid #1E2330; border-radius: 8px; }
 
-    .stTabs [data-baseweb="tab-list"] {
-        background: #13161D;
-        border-radius: 8px 8px 0 0;
-        gap: 4px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        color: #7A8099;
-        font-family: 'Space Mono', monospace;
-        font-size: 12px;
-    }
-    .stTabs [aria-selected="true"] {
-        color: #00CFFF !important;
-        border-bottom: 2px solid #00CFFF;
-    }
+    .stTabs [data-baseweb="tab-list"] { background: #13161D; border-radius: 8px 8px 0 0; gap: 4px; }
+    .stTabs [data-baseweb="tab"] { color: #7A8099; font-family: 'Space Mono', monospace; font-size: 12px; }
+    .stTabs [aria-selected="true"] { color: #00CFFF !important; border-bottom: 2px solid #00CFFF; }
 
     .clima-alert {
         background: #FF6B2D15;
@@ -143,14 +124,6 @@ st.markdown("""
         padding: 10px 14px;
         font-size: 13px;
         margin: 8px 0;
-    }
-
-    .login-box {
-        background: #13161D;
-        border: 1px solid #1E2330;
-        border-radius: 10px;
-        padding: 20px;
-        margin-top: 12px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -167,7 +140,9 @@ for key, default in [
     ("fabric_authed", False),
     ("fabric_token", None),
     ("fabric_user", None),
-    ("modo_conservador", True),   # FIX: inicializado aqui para estar sempre disponível
+    ("modo_conservador", True),
+    ("_device_flow", None),
+    ("_msal_app", None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -179,30 +154,62 @@ for key, default in [
 with st.sidebar:
     st.markdown('<div class="app-title">⚡ INSPEÇÃO<br>LINHAS DE TRANSMISSÃO</div>', unsafe_allow_html=True)
 
-    # ── LOGIN ──
+    # ── BLOCO DE LOGIN ──
     if not is_authenticated():
         st.markdown("### 🔐 Login Energisa")
-        st.caption("Use seu e-mail e senha corporativos.")
-        email_input = st.text_input("E-mail", placeholder="joao@energisa.com.br")
-        senha_input = st.text_input("Senha", type="password")
-        if st.button("Entrar", type="primary"):
-            if not email_input or not senha_input:
-                st.error("Preencha e-mail e senha.")
-            else:
-                with st.spinner("Autenticando..."):
+
+        # Estado: ainda não iniciou o flow
+        if st.session_state["_device_flow"] is None:
+            st.caption("Clique abaixo para gerar o código de acesso. Você precisará autenticar pelo navegador com seu e-mail e senha corporativos (incluindo MFA).")
+            if st.button("🔑 Iniciar Login", type="primary"):
+                with st.spinner("Gerando código de acesso..."):
                     try:
-                        login_fabric(email_input, senha_input)
-                        st.success("✅ Autenticado!")
+                        flow = iniciar_device_flow()
+                        st.session_state["_device_flow"] = flow
                         st.rerun()
                     except Exception as e:
                         st.error(f"❌ {e}")
+
+        # Estado: flow iniciado, aguardando autenticação no navegador
+        else:
+            flow = st.session_state["_device_flow"]
+            code = flow.get("user_code", "")
+            url  = flow.get("verification_uri", "https://microsoft.com/devicelogin")
+
+            st.markdown("#### Passo 1 — Copie o código")
+            st.markdown(f'<div class="device-code">{code}</div>', unsafe_allow_html=True)
+
+            st.markdown(f"#### Passo 2 — Abra o link e cole o código")
+            st.markdown(f"[🌐 Abrir página de login]({url})", unsafe_allow_html=False)
+            st.caption(f"URL: `{url}`")
+
+            st.markdown("#### Passo 3 — Confirme aqui após autenticar")
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if st.button("✅ Já autentiquei", type="primary"):
+                    with st.spinner("Verificando autenticação..."):
+                        try:
+                            concluir_login()
+                            st.success("✅ Autenticado!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ {e}")
+
+            with col2:
+                if st.button("↩️ Reiniciar"):
+                    st.session_state["_device_flow"] = None
+                    st.session_state["_msal_app"]    = None
+                    st.rerun()
+
         st.stop()
 
     # ── USUÁRIO LOGADO ──
     st.success(f"✅ {st.session_state['fabric_user']}")
     if st.button("Sair"):
         for k in ["fabric_authed", "fabric_token", "fabric_user",
-                  "df_rota", "df_base", "weather_map", "resumo"]:
+                  "df_rota", "df_base", "weather_map", "resumo",
+                  "_device_flow", "_msal_app"]:
             st.session_state[k] = None if k != "fabric_authed" else False
         st.rerun()
 
@@ -230,7 +237,6 @@ with st.sidebar:
         value=True,
         help="Remove torres com chuva forte ou vento acima de 36 km/h",
     )
-    # FIX: persiste na sessão para uso fora do bloco sidebar (ex: tab_clima)
     st.session_state["modo_conservador"] = modo_conservador
 
     forcar_atrasadas = st.toggle(
@@ -268,7 +274,6 @@ if gerar:
         st.stop()
 
     df_scored = calcular_score(df_raw)
-
     candidatas = df_scored.nlargest(50, "SCORE")
     weather_map: dict = {}
 
@@ -337,7 +342,6 @@ with tab_rota:
             df_rota[colunas_disponiveis].style
             .background_gradient(subset=["CRITICIDADE_MIN"], cmap="RdYlGn_r")
             .background_gradient(subset=["SCORE"], cmap="Blues")
-            # FIX: .applymap() foi removido no pandas 2.1+ — substituído por .map()
             .map(
                 lambda v: "color: #FF6B6B; font-weight:bold" if v == 1 else "",
                 subset=["FL_ATRASADO"],
@@ -367,7 +371,6 @@ with tab_clima:
         df_clima = pd.DataFrame(dados_clima)
         torres_risco = df_clima[df_clima["Status"] == "⛔ RISCO"]
         if len(torres_risco):
-            # FIX: modo_conservador lido da sessão — seguro fora do bloco sidebar
             _modo = st.session_state["modo_conservador"]
             st.markdown(
                 f'<div class="clima-alert">⛔ <b>{len(torres_risco)} torres</b> com condição climática adversa '
