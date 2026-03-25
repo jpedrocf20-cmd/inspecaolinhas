@@ -42,24 +42,20 @@ st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@300;400;600&display=swap');
 
-    /* ── FORÇA TEMA ESCURO INDEPENDENTE DO NAVEGADOR ── */
+    /* ── FORÇA TEMA ESCURO — variáveis CSS do Streamlit ── */
     :root {
         color-scheme: dark !important;
         --background-color: #0D0F14 !important;
         --secondary-background-color: #13161D !important;
         --text-color: #E8EAF0 !important;
-        --font: 'Inter', sans-serif !important;
+        --primary-color: #00CFFF !important;
     }
-
     html, body {
         color-scheme: dark !important;
         background-color: #0D0F14 !important;
         color: #E8EAF0 !important;
     }
-
-    /* Sobrescreve qualquer tema claro injetado pelo Streamlit */
     .stApp,
-    .stApp > div,
     [data-testid="stAppViewContainer"],
     [data-testid="stAppViewBlockContainer"],
     [data-testid="block-container"] {
@@ -67,42 +63,51 @@ st.markdown("""
         color: #E8EAF0 !important;
     }
 
-    /* Inputs, selects, text areas */
+    /* Inputs e selects */
     .stTextInput input,
     .stNumberInput input,
     .stSelectbox div[data-baseweb="select"] > div,
-    .stMultiSelect div[data-baseweb="select"] > div,
     textarea {
         background-color: #1A1F2E !important;
         color: #E8EAF0 !important;
         border-color: #1E2330 !important;
     }
-
-    /* Dropdown menus */
+    /* Dropdowns */
     [data-baseweb="popover"] div,
     [data-baseweb="menu"] {
         background-color: #1A1F2E !important;
         color: #E8EAF0 !important;
     }
-
-    /* Sliders, toggles labels */
+    /* Labels e textos — escopo restrito, não afeta iframes */
     .stSlider label, .stToggle label,
     .stSelectbox label, .stNumberInput label,
-    p, span, div {
+    [data-testid="stMarkdownContainer"] p,
+    [data-testid="stMarkdownContainer"] span,
+    [data-testid="stMarkdownContainer"] li {
         color: #E8EAF0 !important;
     }
-
-    /* Expanders */
+    h1, h2, h3, h4, h5, h6 { color: #E8EAF0 !important; }
+    hr { border-color: #1E2330 !important; }
     [data-testid="stExpander"] {
         background-color: #13161D !important;
         border: 1px solid #1E2330 !important;
     }
 
-    /* Markdown headers */
-    h1, h2, h3, h4, h5, h6 { color: #E8EAF0 !important; }
-
-    /* Divider */
-    hr { border-color: #1E2330 !important; }
+    /* ── PROTEÇÃO DO MAPA FOLIUM ──
+       O st_folium renderiza dentro de um iframe — qualquer regra
+       ampla como "div { color: ... }" ou "background" vaza para
+       dentro e escurece o canvas do Leaflet ao interagir.
+       As regras abaixo isolam o iframe do tema escuro. */
+    iframe {
+        color-scheme: light !important;
+        background: transparent !important;
+    }
+    [data-testid="stCustomComponentV1"] iframe,
+    .stIFrame iframe {
+        background-color: transparent !important;
+        filter: none !important;
+        color-scheme: light !important;
+    }
 
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
@@ -365,7 +370,7 @@ if gerar:
     df_rota         = otimizar_rota(df_selecionadas, ponto_partida)
 
     # ── Garante clima para TODAS as torres da rota final ──
-    # (torres forçadas por atraso podem não estar nas top-50 candidatas)
+    # Torres forçadas por atraso podem estar fora do top-50 candidatas
     torres_sem_clima = [
         row for _, row in df_rota.iterrows()
         if row["COD_ATIVO"] not in weather_map
