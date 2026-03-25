@@ -153,15 +153,6 @@ def build_map(
         control=True,
     ).add_to(mapa)
 
-    # Camada 3 — Rótulos sobre satélite
-    folium.TileLayer(
-        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri",
-        name="🏷️ Rótulos",
-        overlay=True,
-        control=True,
-        opacity=0.8,
-    ).add_to(mapa)
 
     # ── Camada: todas as torres (fundo) ──
     layer_todas = folium.FeatureGroup(name="Todas as torres", show=True)
