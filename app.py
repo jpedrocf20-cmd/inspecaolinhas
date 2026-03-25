@@ -42,82 +42,17 @@ st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@300;400;600&display=swap');
 
-    /* ── FORÇA TEMA ESCURO — variáveis CSS do Streamlit ── */
-    :root {
-        color-scheme: dark !important;
-        --background-color: #0D0F14 !important;
-        --secondary-background-color: #13161D !important;
-        --text-color: #E8EAF0 !important;
-        --primary-color: #00CFFF !important;
-    }
-    html, body {
-        color-scheme: dark !important;
-        background-color: #0D0F14 !important;
-        color: #E8EAF0 !important;
-    }
-    .stApp,
-    [data-testid="stAppViewContainer"],
-    [data-testid="stAppViewBlockContainer"],
-    [data-testid="block-container"] {
-        background-color: #0D0F14 !important;
-        color: #E8EAF0 !important;
-    }
-
-    /* Inputs e selects */
-    .stTextInput input,
-    .stNumberInput input,
-    .stSelectbox div[data-baseweb="select"] > div,
-    textarea {
-        background-color: #1A1F2E !important;
-        color: #E8EAF0 !important;
-        border-color: #1E2330 !important;
-    }
-    /* Dropdowns */
-    [data-baseweb="popover"] div,
-    [data-baseweb="menu"] {
-        background-color: #1A1F2E !important;
-        color: #E8EAF0 !important;
-    }
-    /* Labels e textos — escopo restrito, não afeta iframes */
-    .stSlider label, .stToggle label,
-    .stSelectbox label, .stNumberInput label,
-    [data-testid="stMarkdownContainer"] p,
-    [data-testid="stMarkdownContainer"] span,
-    [data-testid="stMarkdownContainer"] li {
-        color: #E8EAF0 !important;
-    }
-    h1, h2, h3, h4, h5, h6 { color: #E8EAF0 !important; }
-    hr { border-color: #1E2330 !important; }
-    [data-testid="stExpander"] {
-        background-color: #13161D !important;
-        border: 1px solid #1E2330 !important;
-    }
-
-    /* ── PROTEÇÃO DO MAPA FOLIUM ──
-       O st_folium renderiza dentro de um iframe — qualquer regra
-       ampla como "div { color: ... }" ou "background" vaza para
-       dentro e escurece o canvas do Leaflet ao interagir.
-       As regras abaixo isolam o iframe do tema escuro. */
-    iframe {
-        color-scheme: light !important;
-        background: transparent !important;
-    }
-    [data-testid="stCustomComponentV1"] iframe,
-    .stIFrame iframe {
-        background-color: transparent !important;
-        filter: none !important;
-        color-scheme: light !important;
-    }
-
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
+    .stApp { background: #0D0F14; color: #E8EAF0; }
+
     [data-testid="stSidebar"] {
-        background: #13161D !important;
+        background: #13161D;
         border-right: 1px solid #1E2330;
     }
 
     [data-testid="metric-container"] {
-        background: #13161D !important;
+        background: #13161D;
         border: 1px solid #1E2330;
         border-radius: 10px;
         padding: 16px 20px;
@@ -138,7 +73,7 @@ st.markdown("""
         font-family: 'Space Mono', monospace;
         font-size: 22px;
         font-weight: 700;
-        color: #00CFFF !important;
+        color: #00CFFF;
         letter-spacing: -0.02em;
         border-bottom: 2px solid #1E2330;
         padding-bottom: 12px;
@@ -161,15 +96,15 @@ st.markdown("""
         font-family: 'Space Mono', monospace;
         font-size: 26px;
         font-weight: 700;
-        color: #00CFFF !important;
+        color: #00CFFF;
         letter-spacing: 0.15em;
         text-align: center;
         margin: 12px 0;
     }
 
     .stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #00CFFF, #0080FF) !important;
-        color: #0D0F14 !important;
+        background: linear-gradient(135deg, #00CFFF, #0080FF);
+        color: #0D0F14;
         font-weight: 700;
         font-family: 'Space Mono', monospace;
         border: none;
@@ -182,8 +117,8 @@ st.markdown("""
 
     [data-testid="stDataFrame"] { border: 1px solid #1E2330; border-radius: 8px; }
 
-    .stTabs [data-baseweb="tab-list"] { background: #13161D !important; border-radius: 8px 8px 0 0; gap: 4px; }
-    .stTabs [data-baseweb="tab"] { color: #7A8099 !important; font-family: 'Space Mono', monospace; font-size: 12px; }
+    .stTabs [data-baseweb="tab-list"] { background: #13161D; border-radius: 8px 8px 0 0; gap: 4px; }
+    .stTabs [data-baseweb="tab"] { color: #7A8099; font-family: 'Space Mono', monospace; font-size: 12px; }
     .stTabs [aria-selected="true"] { color: #00CFFF !important; border-bottom: 2px solid #00CFFF; }
 
     .clima-alert {
@@ -193,6 +128,19 @@ st.markdown("""
         padding: 10px 14px;
         font-size: 13px;
         margin: 8px 0;
+    }
+
+    /* ── PROTEÇÃO DO IFRAME DO MAPA FOLIUM ──
+       Força color-scheme:light no iframe para evitar que o tema escuro
+       do Streamlit vaze e escureça o canvas do Leaflet ao interagir. */
+    iframe {
+        color-scheme: light !important;
+    }
+    [data-testid="stCustomComponentV1"] > div > iframe,
+    .stIFrame > iframe {
+        color-scheme: light !important;
+        background-color: transparent !important;
+        filter: none !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -369,8 +317,7 @@ if gerar:
     df_selecionadas = selecionar_torres(df_filtrado, max_torres, forcar_atrasadas)
     df_rota         = otimizar_rota(df_selecionadas, ponto_partida)
 
-    # ── Garante clima para TODAS as torres da rota final ──
-    # Torres forçadas por atraso podem estar fora do top-50 candidatas
+    # Garante clima para TODAS as torres da rota final
     torres_sem_clima = [
         row for _, row in df_rota.iterrows()
         if row["COD_ATIVO"] not in weather_map
