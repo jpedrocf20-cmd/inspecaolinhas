@@ -96,7 +96,12 @@ def build_map(
     weather_map: { COD_ATIVO: dict do clima }
     """
     if df.empty:
-        return folium.Map(location=[-15.8, -47.9], zoom_start=5)
+        m = folium.Map(location=[-15.8, -47.9], zoom_start=5, tiles=None)
+        folium.TileLayer(
+            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            attr="Esri", name="🛰️ Satélite",
+        ).add_to(m)
+        return m
 
     # Remove linhas sem coordenadas válidas antes de calcular centro
     df_valido = df.dropna(subset=["LATITUDE", "LONGITUDE"])
@@ -106,39 +111,40 @@ def build_map(
     center_lat = df_valido["LATITUDE"].mean()
     center_lon = df_valido["LONGITUDE"].mean()
 
-    # Mapa base: satélite Esri
+    # Tile padrão: satélite Esri (robusto, sem depender de CDN externo)
+    # O CartoDB dark_matter é adicionado como camada alternativa no LayerControl
     mapa = folium.Map(
         location=[center_lat, center_lon],
         zoom_start=8,
-        tiles=None,           # tiles adicionados manualmente para ter múltiplas camadas
+        tiles=None,           # sem tile padrão — adicionamos manualmente abaixo
         control_scale=True,
     )
 
-    # Camada satélite (padrão, já ativa)
+    # Camada 1 — Satélite Esri (padrão, sempre carrega)
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri World Imagery",
+        attr="Esri",
         name="🛰️ Satélite",
         overlay=False,
         control=True,
     ).add_to(mapa)
 
-    # Camada de rótulos sobre o satélite (nomes de ruas/cidades)
-    folium.TileLayer(
-        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-        attr="Esri Reference",
-        name="🏷️ Rótulos",
-        overlay=True,
-        control=True,
-        opacity=0.8,
-    ).add_to(mapa)
-
-    # Camada escura opcional
+    # Camada 2 — CartoDB dark (alternativa)
     folium.TileLayer(
         tiles="CartoDB dark_matter",
         name="🌑 Mapa escuro",
         overlay=False,
         control=True,
+    ).add_to(mapa)
+
+    # Camada 3 — Rótulos sobre satélite
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri",
+        name="🏷️ Rótulos",
+        overlay=True,
+        control=True,
+        opacity=0.8,
     ).add_to(mapa)
 
     # ── Camada: todas as torres (fundo) ──
