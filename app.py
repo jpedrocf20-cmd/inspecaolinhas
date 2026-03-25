@@ -324,7 +324,7 @@ if resumo:
     c2.metric("⚠️ Atrasadas",          resumo["torres_atrasadas"])
     c3.metric("📏 Distância total",    f"{resumo['distancia_total']} km")
     c4.metric("🔴 Criticidade mínima", resumo["criticidade_min"])
-    c5.metric("📊 Score médio",        resumo["score_medio"])
+    c5.metric("📊 Score médio",        f"{resumo['score_medio']}%")
     st.divider()
 
 tab_mapa, tab_rota, tab_clima, tab_ocorrencias = st.tabs([
