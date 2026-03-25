@@ -384,21 +384,33 @@ with tab_rota:
         colunas_float1   = ["DIST_PROX_KM", "DIST_ACUM_KM"]
         colunas_float2   = ["SCORE"]
 
+        def _fmt_int(v):
+            try:
+                if v is None: return "–"
+                s = str(v).strip()
+                if s in ("", "None", "nan", "NaN", "NaT"): return "–"
+                return str(int(float(s)))
+            except Exception:
+                return "–"
+
+        def _fmt_f1(v):
+            try:
+                if v is None: return "–"
+                s = str(v).strip()
+                if s in ("", "None", "nan", "NaN", "NaT"): return "–"
+                return f"{float(s):.1f}"
+            except Exception:
+                return "–"
+
         for col in colunas_inteiras:
             if col in df_display.columns:
-                df_display[col] = df_display[col].apply(
-                    lambda v: str(int(float(v))) if str(v) not in ("None", "nan", "") and v is not None else "–"
-                )
+                df_display[col] = df_display[col].apply(_fmt_int)
         for col in colunas_float1:
             if col in df_display.columns:
-                df_display[col] = df_display[col].apply(
-                    lambda v: f"{float(v):.1f}" if str(v) not in ("None", "nan", "") and v is not None else "–"
-                )
+                df_display[col] = df_display[col].apply(_fmt_f1)
         for col in colunas_float2:
             if col in df_display.columns:
-                df_display[col] = df_display[col].apply(
-                    lambda v: f"{float(v):.1f}" if str(v) not in ("None", "nan", "") and v is not None else "–"
-                )
+                df_display[col] = df_display[col].apply(_fmt_f1)
 
         # Renomeia colunas para nomes amigáveis
         rename_rota = {
