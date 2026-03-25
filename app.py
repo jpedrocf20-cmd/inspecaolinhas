@@ -381,7 +381,9 @@ with tab_rota:
 
         for col in ["ORDEM_VISITA","NUM_TORRE","CRITICIDADE_MIN","QTD_SS","PIOR_SALDO_DIAS","FL_ATRASADO"]:
             if col in df_exibir.columns:
-                df_exibir[col] = df_exibir[col].apply(_fmt_int)
+                df_exibir[col] = df_exibir[col].apply(
+                    lambda v: str(int(float(v))) if pd.notna(v) and v is not None else None
+                )
         for col in ["SCORE"]:
             if col in df_exibir.columns:
                 df_exibir[col] = df_exibir[col].apply(
@@ -414,7 +416,7 @@ with tab_rota:
         # Converte FL_ATRASADO de 0/1 para texto legível
         if "Atrasado" in df_exibir.columns:
             df_exibir["Atrasado"] = df_exibir["Atrasado"].apply(
-                lambda v: "⚠️ Sim" if v == 1 else "—"
+                lambda v: "⚠️ Sim" if str(v) == "1" else "—"
             )
 
         # Estilos CSS puros — sem matplotlib
