@@ -602,44 +602,77 @@ with tab_clima:
 
 with tab_ocorrencias:
     if df_rota is not None:
-        torre_sel = st.selectbox(
-            "Selecione uma torre para ver ocorrências",
-            options=df_rota["COD_ATIVO"].tolist(),
-            format_func=lambda c: f"{c} — Torre {df_rota.loc[df_rota['COD_ATIVO']==c,'NUM_TORRE'].values[0] if 'NUM_TORRE' in df_rota.columns else ''}",
-        )
-        if torre_sel:
-            try:
-                from services.database import load_ocorrencias
-                with st.spinner("Carregando ocorrências..."):
-                    df_oc = load_ocorrencias(torre_sel)
-                if df_oc.empty:
-                    st.info("Nenhuma ocorrência pendente para esta torre.")
-                else:
-                    # Renomeia para exibição amigável
-                    rename_oc = {
-                        "COD_SS":           "Cód. SS",
-                        "COD_ATIVO":        "Ativo",
-                        "NOME_PRIORIDADE":  "Prioridade",
-                        "NIVEL_CRITICIDADE":"Criticidade",
-                        "DIAS_EM_ABERTO":   "Dias em aberto",
-                        "PRAZO_DIAS":       "Prazo (dias)",
-                        "SALDO_DIAS":       "Saldo (dias)",
-                        "STATUS_PRAZO":     "Status do prazo",
-                        "TEXT_OBSERVACAO":  "Observação / Causa",
-                    }
-                    cols_disp = [k for k in rename_oc if k in df_oc.columns]
-                    df_oc_exibir = df_oc[cols_disp].rename(columns=rename_oc)
+        try:
+            from services.database import load_ocorrencias
 
-                    st.dataframe(
-                        df_oc_exibir.style.map(
-                            lambda v: "color: #FF6B6B; font-weight:bold"
-                            if isinstance(v, str) and "Atrasado" in v else "",
-                            subset=["Status do prazo"] if "Status do prazo" in df_oc_exibir.columns else [],
-                        ),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                    def _gerar_excel_ocorrencias(df: pd.DataFrame, cod_ativo: str) -> bytes:
+            # ── Pré-carrega ocorrências de todas as torres da rota ──
+            if "df_ocorrencias_cache" not in st.session_state or st.session_state.get("_oc_rota_hash") != id(df_rota):
+                with st.spinner("🔄 Verificando ocorrências das torres..."):
+                    _oc_parts = []
+                    for _cod in df_rota["COD_ATIVO"].tolist():
+                        try:
+                            _df_tmp = load_ocorrencias(_cod)
+                            if not _df_tmp.empty:
+                                _oc_parts.append(_df_tmp)
+                        except Exception:
+                            pass
+                    st.session_state["df_ocorrencias_cache"] = pd.concat(_oc_parts, ignore_index=True) if _oc_parts else pd.DataFrame()
+                    st.session_state["_oc_rota_hash"] = id(df_rota)
+
+            df_oc_all = st.session_state["df_ocorrencias_cache"]
+
+            # Torres que realmente têm ocorrências
+            if df_oc_all.empty:
+                st.info("Nenhuma ocorrência pendente para as torres desta rota.")
+            else:
+                torres_com_oc = df_oc_all["COD_ATIVO"].unique().tolist() if "COD_ATIVO" in df_oc_all.columns else []
+
+                def _label_torre(c):
+                    if c == "__todas__":
+                        return f"📋 Todas as torres ({len(torres_com_oc)} com ocorrências)"
+                    num = df_rota.loc[df_rota["COD_ATIVO"] == c, "NUM_TORRE"].values
+                    return f"{c} — Torre {num[0]}" if len(num) else c
+
+                opcoes_sel = ["__todas__"] + torres_com_oc
+                torre_sel = st.selectbox(
+                    f"Selecione uma torre para ver ocorrências ({len(torres_com_oc)} torres com pendências)",
+                    options=opcoes_sel,
+                    format_func=_label_torre,
+                )
+
+                # Filtra df conforme seleção
+                if torre_sel == "__todas__":
+                    df_oc = df_oc_all.copy()
+                    label_export = "todas_torres"
+                else:
+                    df_oc = df_oc_all[df_oc_all["COD_ATIVO"] == torre_sel].copy()
+                    label_export = torre_sel
+
+                # Renomeia para exibição amigável
+                rename_oc = {
+                    "COD_SS":           "Cód. SS",
+                    "COD_ATIVO":        "Ativo",
+                    "NOME_PRIORIDADE":  "Prioridade",
+                    "NIVEL_CRITICIDADE":"Criticidade",
+                    "DIAS_EM_ABERTO":   "Dias em aberto",
+                    "PRAZO_DIAS":       "Prazo (dias)",
+                    "SALDO_DIAS":       "Saldo (dias)",
+                    "STATUS_PRAZO":     "Status do prazo",
+                    "TEXT_OBSERVACAO":  "Observação / Causa",
+                }
+                cols_disp = [k for k in rename_oc if k in df_oc.columns]
+                df_oc_exibir = df_oc[cols_disp].rename(columns=rename_oc)
+
+                st.dataframe(
+                    df_oc_exibir.style.map(
+                        lambda v: "color: #FF6B6B; font-weight:bold"
+                        if isinstance(v, str) and "Atrasado" in v else "",
+                        subset=["Status do prazo"] if "Status do prazo" in df_oc_exibir.columns else [],
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                def _gerar_excel_ocorrencias(df: pd.DataFrame, cod_ativo: str) -> bytes:
                         wb = Workbook()
                         ws = wb.active
                         ws.title = "Ocorrências"
@@ -716,22 +749,22 @@ with tab_ocorrencias:
                         wb.save(buf)
                         return buf.getvalue()
 
-                    xlsx_oc = _gerar_excel_ocorrencias(df_oc_exibir, torre_sel)
-                    st.download_button(
-                        "📥 Exportar ocorrências Excel",
-                        xlsx_oc,
-                        f"ocorrencias_{torre_sel}.xlsx",
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key=f"dl_oc_{torre_sel}",
-                    )
-            except Exception as e:
-                err = str(e)
-                if "18456" in err or "authentication" in err.lower() or "login" in err.lower():
-                    st.error(
-                        "❌ **Erro de autenticação ao carregar ocorrências.**\n\n"
-                        "Seu token de sessão pode ter expirado. Clique em **Sair** na sidebar e faça login novamente."
-                    )
-                else:
-                    st.error(f"Erro ao carregar ocorrências: {e}")
+                xlsx_oc = _gerar_excel_ocorrencias(df_oc_exibir, label_export)
+                st.download_button(
+                    "📥 Exportar ocorrências Excel",
+                    xlsx_oc,
+                    f"ocorrencias_{label_export}.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dl_oc_{label_export}",
+                )
+        except Exception as e:
+            err = str(e)
+            if "18456" in err or "authentication" in err.lower() or "login" in err.lower():
+                st.error(
+                    "❌ **Erro de autenticação ao carregar ocorrências.**\n\n"
+                    "Seu token de sessão pode ter expirado. Clique em **Sair** na sidebar e faça login novamente."
+                )
+            else:
+                st.error(f"Erro ao carregar ocorrências: {e}")
     else:
         st.info("Gere a rota para consultar ocorrências por torre.")
