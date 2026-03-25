@@ -22,7 +22,7 @@ from scipy.spatial.distance import cdist
 # Componentes e pesos máximos teóricos:
 #   Criticidade : (7 - nível) * 10  → máx 60 pts  (nível 1 = mais crítico)
 #   Ocorrências : QTD_SS * 2        → máx 40 pts  (cap em 20 SS)
-#   Atraso      : |saldo| * 5       → máx 100 pts (cap em 20 dias)
+#   Atraso      : |saldo| * 0.5     → máx 100 pts (cap em 200 dias)
 # Total bruto máximo = 200 pts → normalizado para 0–100%
 
 _SCORE_MAX_BRUTO = 200.0
@@ -33,11 +33,11 @@ def calcular_score(df: pd.DataFrame) -> pd.DataFrame:
     Adiciona coluna SCORE ao DataFrame (0.0 a 100.0, em %).
 
     Componentes:
-      - Criticidade : (7 - CRITICIDADE_MIN) × 10   [máx 60]
-      - Ocorrências : min(QTD_SS, 20) × 2           [máx 40]
-      - Atraso      : min(|PIOR_SALDO_DIAS|, 20) × 5 [máx 100, só se atrasado]
+      - Criticidade : (7 - CRITICIDADE_MIN) × 10     [máx 60]
+      - Ocorrências : min(QTD_SS, 20) × 2             [máx 40]
+      - Atraso      : min(|PIOR_SALDO_DIAS|, 200) × 0.5 [máx 100, só se atrasado]
 
-    100% = torre com o pior cenário possível (nível 1, 20+ OS, 20+ dias atrasada)
+    100% = torre com o pior cenário possível (nível 1, 20+ OS, 200+ dias atrasada)
     """
     df = df.copy()
 
@@ -45,12 +45,12 @@ def calcular_score(df: pd.DataFrame) -> pd.DataFrame:
     score_ocorrencias = df["QTD_SS"].clip(upper=20) * 2
     score_atraso = np.where(
         df["FL_ATRASADO"] == 1,
-        df["PIOR_SALDO_DIAS"].abs().clip(upper=20) * 5,
+        df["PIOR_SALDO_DIAS"].abs().clip(upper=200) * 0.5,
         0,
     )
 
     score_bruto = score_criticidade + score_ocorrencias + score_atraso
-    df["SCORE"] = (score_bruto / _SCORE_MAX_BRUTO * 100).round(1)
+    df["SCORE"] = (score_bruto / _SCORE_MAX_BRUTO * 100).round(1).clip(0, 100)
     return df
 
 
