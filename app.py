@@ -446,8 +446,119 @@ with tab_rota:
             styled = styled.map(_s_atrasado, subset=["Atrasado"])
 
         st.dataframe(styled, use_container_width=True, hide_index=True)
-        csv = df_exibir.to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Exportar rota CSV", csv, "rota_inspecao.csv", "text/csv")
+
+        # ── Exportar Excel formatado ──
+        import io
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, GradientFill
+        from openpyxl.utils import get_column_letter
+
+        def _gerar_excel_rota(df: pd.DataFrame) -> bytes:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Rota de Inspeção"
+
+            # Paleta
+            COR_HEADER_BG  = "1A1F2E"
+            COR_HEADER_FG  = "00CFFF"
+            COR_TITULO_BG  = "0D1117"
+            COR_LINHA_PAR  = "13161D"
+            COR_LINHA_IMPAR= "0D0F14"
+            COR_BORDA      = "1E2330"
+
+            CRIT_BG = {1:"FF2D2D33",2:"FF6B2D33",3:"FFA50033",4:"FFD70033",5:"90EE9033",6:"4CAF5033"}
+            CRIT_FG = {1:"FF6B6B",  2:"FFA07A",  3:"FFC04D",  4:"FFE680",  5:"B8F0B8",  6:"81C784"}
+
+            def score_fg(v):
+                try:
+                    f = float(str(v).replace("%",""))
+                    if f >= 80: return "FF6B6B"
+                    if f >= 60: return "FFA07A"
+                    if f >= 40: return "FFC04D"
+                    if f >= 20: return "7EC8FF"
+                    return "E8EAF0"
+                except: return "E8EAF0"
+
+            thin = Side(style="thin", color=COR_BORDA)
+            borda = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+            # Título
+            ws.merge_cells("A1:L1")
+            tc = ws["A1"]
+            tc.value = f"Rota de Inspeção — {len(df)} torres | Distância total: {resumo.get('distancia_total','?')} km"
+            tc.font = Font(name="Arial", bold=True, size=14, color=COR_HEADER_FG)
+            tc.fill = PatternFill("solid", fgColor=COR_TITULO_BG)
+            tc.alignment = Alignment(horizontal="center", vertical="center")
+            ws.row_dimensions[1].height = 30
+
+            # Subtítulo / data
+            ws.merge_cells("A2:L2")
+            sc = ws["A2"]
+            sc.value = f"Gerado em: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}"
+            sc.font = Font(name="Arial", size=9, color="7A8099")
+            sc.fill = PatternFill("solid", fgColor=COR_TITULO_BG)
+            sc.alignment = Alignment(horizontal="right", vertical="center")
+            ws.row_dimensions[2].height = 16
+
+            # Cabeçalho
+            headers = list(df.columns)
+            for ci, h in enumerate(headers, start=1):
+                cell = ws.cell(row=3, column=ci, value=h)
+                cell.font = Font(name="Arial", bold=True, size=10, color=COR_HEADER_FG)
+                cell.fill = PatternFill("solid", fgColor=COR_HEADER_BG)
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                cell.border = borda
+            ws.row_dimensions[3].height = 28
+
+            # Dados
+            for ri, row_data in enumerate(df.itertuples(index=False), start=4):
+                bg = COR_LINHA_PAR if ri % 2 == 0 else COR_LINHA_IMPAR
+                for ci, val in enumerate(row_data, start=1):
+                    col_name = headers[ci - 1]
+                    cell = ws.cell(row=ri, column=ci, value=val)
+                    cell.font = Font(name="Arial", size=10, color="E8EAF0")
+                    cell.fill = PatternFill("solid", fgColor=bg)
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    cell.border = borda
+
+                    if col_name == "Criticidade":
+                        try:
+                            v = int(float(str(val)))
+                            cell.fill = PatternFill("solid", fgColor=CRIT_BG.get(v, bg)[:-2] or bg)
+                            cell.font = Font(name="Arial", bold=True, size=10, color=CRIT_FG.get(v, "E8EAF0"))
+                        except: pass
+
+                    elif col_name == "Score (%)":
+                        cell.font = Font(name="Arial", bold=True, size=10, color=score_fg(val))
+
+                    elif col_name == "Atrasado" and str(val) not in ("—", "0", ""):
+                        cell.font = Font(name="Arial", bold=True, size=10, color="FF6B6B")
+
+                ws.row_dimensions[ri].height = 20
+
+            # Larguras de coluna
+            col_widths = {
+                "Ordem":14,"Ativo":14,"Torre":10,"Empresa":12,"Instalação":18,
+                "Criticidade":14,"Qtd SS":10,"Pior saldo (dias)":18,
+                "Atrasado":12,"Score (%)":12,"Dist. próx (km)":16,"Dist. acum (km)":16,
+            }
+            for ci, h in enumerate(headers, start=1):
+                ws.column_dimensions[get_column_letter(ci)].width = col_widths.get(h, 14)
+
+            # Congelar painel após cabeçalho
+            ws.freeze_panes = "A4"
+
+            buf = io.BytesIO()
+            wb.save(buf)
+            return buf.getvalue()
+
+        xlsx_rota = _gerar_excel_rota(df_exibir)
+        st.download_button(
+            "📥 Exportar rota Excel",
+            xlsx_rota,
+            "rota_inspecao.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
     else:
         st.info("Gere a rota para ver o detalhamento aqui.")
 
@@ -523,12 +634,94 @@ with tab_ocorrencias:
                         use_container_width=True,
                         hide_index=True,
                     )
-                    csv_oc = df_oc_exibir.to_csv(index=False).encode("utf-8")
+                    import io
+                    from openpyxl import Workbook
+                    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+                    from openpyxl.utils import get_column_letter
+
+                    def _gerar_excel_ocorrencias(df: pd.DataFrame, cod_ativo: str) -> bytes:
+                        wb = Workbook()
+                        ws = wb.active
+                        ws.title = "Ocorrências"
+
+                        COR_HEADER_BG = "1A1F2E"
+                        COR_HEADER_FG = "00CFFF"
+                        COR_TITULO_BG = "0D1117"
+                        COR_LINHA_PAR  = "13161D"
+                        COR_LINHA_IMPAR= "0D0F14"
+                        COR_BORDA      = "1E2330"
+
+                        thin = Side(style="thin", color=COR_BORDA)
+                        borda = Border(left=thin, right=thin, top=thin, bottom=thin)
+                        n_cols = len(df.columns)
+                        last_col = get_column_letter(n_cols)
+
+                        ws.merge_cells(f"A1:{last_col}1")
+                        tc = ws["A1"]
+                        num_torre = ""
+                        if df_rota is not None and "NUM_TORRE" in df_rota.columns:
+                            matches = df_rota.loc[df_rota["COD_ATIVO"] == cod_ativo, "NUM_TORRE"].values
+                            if len(matches): num_torre = f" — Torre {matches[0]}"
+                        tc.value = f"Ocorrências: {cod_ativo}{num_torre}"
+                        tc.font = Font(name="Arial", bold=True, size=14, color=COR_HEADER_FG)
+                        tc.fill = PatternFill("solid", fgColor=COR_TITULO_BG)
+                        tc.alignment = Alignment(horizontal="center", vertical="center")
+                        ws.row_dimensions[1].height = 30
+
+                        ws.merge_cells(f"A2:{last_col}2")
+                        sc = ws["A2"]
+                        sc.value = f"Gerado em: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}"
+                        sc.font = Font(name="Arial", size=9, color="7A8099")
+                        sc.fill = PatternFill("solid", fgColor=COR_TITULO_BG)
+                        sc.alignment = Alignment(horizontal="right", vertical="center")
+                        ws.row_dimensions[2].height = 16
+
+                        headers = list(df.columns)
+                        for ci, h in enumerate(headers, start=1):
+                            cell = ws.cell(row=3, column=ci, value=h)
+                            cell.font = Font(name="Arial", bold=True, size=10, color=COR_HEADER_FG)
+                            cell.fill = PatternFill("solid", fgColor=COR_HEADER_BG)
+                            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                            cell.border = borda
+                        ws.row_dimensions[3].height = 28
+
+                        for ri, row_data in enumerate(df.itertuples(index=False), start=4):
+                            bg = COR_LINHA_PAR if ri % 2 == 0 else COR_LINHA_IMPAR
+                            for ci, val in enumerate(row_data, start=1):
+                                col_name = headers[ci - 1]
+                                cell = ws.cell(row=ri, column=ci, value=val)
+                                cell.fill = PatternFill("solid", fgColor=bg)
+                                align_left = col_name in ("Prioridade", "Observação / Causa", "Status do prazo")
+                                cell.alignment = Alignment(horizontal="left" if align_left else "center",
+                                                           vertical="center", wrap_text=True)
+                                cell.border = borda
+                                is_atrasado = col_name == "Status do prazo" and isinstance(val, str) and "Atrasado" in val
+                                cell.font = Font(
+                                    name="Arial", size=10,
+                                    color="FF6B6B" if is_atrasado else "E8EAF0",
+                                    bold=is_atrasado,
+                                )
+                            ws.row_dimensions[ri].height = 22
+
+                        col_widths = {
+                            "Cód. SS": 10, "Ativo": 12, "Prioridade": 22, "Criticidade": 12,
+                            "Dias em aberto": 16, "Prazo (dias)": 14, "Saldo (dias)": 14,
+                            "Status do prazo": 18, "Observação / Causa": 42,
+                        }
+                        for ci, h in enumerate(headers, start=1):
+                            ws.column_dimensions[get_column_letter(ci)].width = col_widths.get(h, 16)
+
+                        ws.freeze_panes = "A4"
+                        buf = io.BytesIO()
+                        wb.save(buf)
+                        return buf.getvalue()
+
+                    xlsx_oc = _gerar_excel_ocorrencias(df_oc_exibir, torre_sel)
                     st.download_button(
-                        "📥 Exportar ocorrências CSV",
-                        csv_oc,
-                        f"ocorrencias_{torre_sel}.csv",
-                        "text/csv",
+                        "📥 Exportar ocorrências Excel",
+                        xlsx_oc,
+                        f"ocorrencias_{torre_sel}.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key=f"dl_oc_{torre_sel}",
                     )
             except Exception as e:
