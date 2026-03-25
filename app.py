@@ -381,7 +381,7 @@ with tab_rota:
         for col in ["SCORE"]:
             if col in df_exibir.columns:
                 df_exibir[col] = df_exibir[col].apply(
-                    lambda v: f"{int(round(float(v)))}%" if v is not None else "–"
+                    lambda v: f"{int(round(float(v)))}%" if pd.notna(v) else "–"
                 )
         for col in ["DIST_PROX_KM","DIST_ACUM_KM"]:
             if col in df_exibir.columns:
