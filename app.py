@@ -337,7 +337,11 @@ with tab_mapa:
     else:
         st.info("👈 Configure os filtros e clique em **Gerar Rota Otimizada** para visualizar o mapa.")
         import folium
-        mapa_vazio = folium.Map(location=[-15.8, -47.9], zoom_start=4, tiles="CartoDB dark_matter")
+        mapa_vazio = folium.Map(location=[-15.8, -47.9], zoom_start=4, tiles=None)
+        folium.TileLayer(
+            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            attr="Esri", name="🛰️ Satélite",
+        ).add_to(mapa_vazio)
         st_folium(mapa_vazio, use_container_width=True, height=500)
 
 with tab_rota:
@@ -363,6 +367,21 @@ with tab_rota:
         # ── Prepara exibição ──
         df_exibir = df_rota.copy()
 
+        # Formata colunas numéricas ANTES de estilizar
+        def _fmt_int(v):
+            try: return int(float(v))
+            except: return None
+        def _fmt_f1(v):
+            try: return round(float(v), 1)
+            except: return None
+
+        for col in ["ORDEM_VISITA","NUM_TORRE","CRITICIDADE_MIN","QTD_SS","PIOR_SALDO_DIAS","FL_ATRASADO"]:
+            if col in df_exibir.columns:
+                df_exibir[col] = df_exibir[col].apply(_fmt_int)
+        for col in ["SCORE","DIST_PROX_KM","DIST_ACUM_KM"]:
+            if col in df_exibir.columns:
+                df_exibir[col] = df_exibir[col].apply(_fmt_f1)
+
         # Renomeia colunas para português
         rename = {
             "ORDEM_VISITA":   "Ordem",
@@ -384,21 +403,42 @@ with tab_rota:
         # Converte FL_ATRASADO de 0/1 para texto legível
         if "Atrasado" in df_exibir.columns:
             df_exibir["Atrasado"] = df_exibir["Atrasado"].apply(
-                lambda v: "⚠️ Sim" if int(float(v)) == 1 else "—"
-                if str(v) not in ["", "nan"] else "—"
+                lambda v: "⚠️ Sim" if v == 1 else "—"
             )
 
-        st.dataframe(
-            df_exibir.style
-            .background_gradient(subset=["Criticidade"], cmap="RdYlGn_r")
-            .background_gradient(subset=["Score (%)"], cmap="Blues")
-            .map(
-                lambda v: "color: #FF6B6B; font-weight:bold" if v == "⚠️ Sim" else "",
-                subset=["Atrasado"],
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
+        # Estilos CSS puros — sem matplotlib
+        CORES_CRIT = {
+            1: "background:#FF2D2D33;color:#FF6B6B;font-weight:bold",
+            2: "background:#FF6B2D33;color:#FFA07A;font-weight:bold",
+            3: "background:#FFA50033;color:#FFC04D",
+            4: "background:#FFD70033;color:#FFE680",
+            5: "background:#90EE9033;color:#B8F0B8",
+            6: "background:#4CAF5033;color:#81C784",
+        }
+        def _s_crit(v):
+            try: return CORES_CRIT.get(int(v), "")
+            except: return ""
+        def _s_score(v):
+            try:
+                f = float(v)
+                if f >= 80: return "background:#FF2D2D33;color:#FF6B6B;font-weight:bold"
+                if f >= 60: return "background:#FF6B2D33;color:#FFA07A"
+                if f >= 40: return "background:#FFA50033;color:#FFC04D"
+                if f >= 20: return "background:#00CFFF22;color:#7EC8FF"
+                return ""
+            except: return ""
+        def _s_atrasado(v):
+            return "color:#FF6B6B;font-weight:bold" if v == "⚠️ Sim" else ""
+
+        styled = df_exibir.style
+        if "Criticidade" in df_exibir.columns:
+            styled = styled.map(_s_crit, subset=["Criticidade"])
+        if "Score (%)" in df_exibir.columns:
+            styled = styled.map(_s_score, subset=["Score (%)"])
+        if "Atrasado" in df_exibir.columns:
+            styled = styled.map(_s_atrasado, subset=["Atrasado"])
+
+        st.dataframe(styled, use_container_width=True, hide_index=True)
         csv = df_exibir.to_csv(index=False).encode("utf-8")
         st.download_button("📥 Exportar rota CSV", csv, "rota_inspecao.csv", "text/csv")
     else:
@@ -408,26 +448,32 @@ with tab_clima:
     if weather_map:
         dados_clima = []
         for cod, info in weather_map.items():
-            if info.get("ok"):
-                dados_clima.append({
-                    "Torre (COD_ATIVO)": cod,
-                    "Condição":    info["descricao"],
-                    "Temp (°C)":   info["temperatura"],
-                    "Umidade (%)": info["umidade"],
-                    "Vento (km/h)": info["vento_kmh"],
-                    "Chuva (mm/h)": info["chuva_mm"],
-                    "Status":      "⛔ RISCO" if info["risco"] else "✅ OK",
-                })
-        df_clima = pd.DataFrame(dados_clima)
-        torres_risco = df_clima[df_clima["Status"] == "⛔ RISCO"]
-        if len(torres_risco):
-            _modo = st.session_state["modo_conservador"]
-            st.markdown(
-                f'<div class="clima-alert">⛔ <b>{len(torres_risco)} torres</b> com condição climática adversa '
-                f'{"foram removidas da rota" if _modo else "estão na rota (modo não conservador)"}.</div>',
-                unsafe_allow_html=True,
-            )
-        st.dataframe(df_clima, use_container_width=True, hide_index=True)
+            if not isinstance(info, dict): continue
+            dados_clima.append({
+                "Torre (COD_ATIVO)": cod,
+                "Condição":    info.get("descricao", "N/D") if info.get("ok") else f"Erro: {info.get('erro','')}",
+                "Temp (°C)":   round(info["temperatura"], 1) if info.get("ok") else "-",
+                "Umidade (%)": info.get("umidade", "-") if info.get("ok") else "-",
+                "Vento (km/h)": info.get("vento_kmh", "-") if info.get("ok") else "-",
+                "Chuva (mm/h)": info.get("chuva_mm", "-") if info.get("ok") else "-",
+                "_risco_bool": bool(info.get("risco", False)),
+                "Status":      "RISCO" if info.get("risco", False) else "OK",
+            })
+        if not dados_clima:
+            st.info("Nenhum dado climático disponível.")
+        else:
+            df_clima = pd.DataFrame(dados_clima)
+            n_risco = int(df_clima["_risco_bool"].sum())
+            if n_risco:
+                _modo = st.session_state["modo_conservador"]
+                st.markdown(
+                    f'<div class="clima-alert">⛔ <b>{n_risco} torres</b> com condição climática adversa '
+                    f'{"foram removidas da rota" if _modo else "estão na rota (modo não conservador)"}.</div>',
+                    unsafe_allow_html=True,
+                )
+            df_clima_exibir = df_clima.drop(columns=["_risco_bool"]).copy()
+            df_clima_exibir["Status"] = df_clima_exibir["Status"].replace({"RISCO": "⛔ RISCO", "OK": "✅ OK"})
+            st.dataframe(df_clima_exibir, use_container_width=True, hide_index=True)
     else:
         st.info("Gere a rota para ver as condições climáticas.")
 
@@ -469,6 +515,14 @@ with tab_ocorrencias:
                         ),
                         use_container_width=True,
                         hide_index=True,
+                    )
+                    csv_oc = df_oc_exibir.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        "📥 Exportar ocorrências CSV",
+                        csv_oc,
+                        f"ocorrencias_{torre_sel}.csv",
+                        "text/csv",
+                        key=f"dl_oc_{torre_sel}",
                     )
             except Exception as e:
                 st.error(f"Erro ao carregar ocorrências: {e}")
