@@ -379,11 +379,15 @@ with tab_rota:
             try: return round(float(v), 1)
             except: return None
 
+        def _fmt_int_str(v):
+            try:
+                return str(int(float(v)))
+            except (TypeError, ValueError):
+                return None
+
         for col in ["ORDEM_VISITA","NUM_TORRE","CRITICIDADE_MIN","QTD_SS","PIOR_SALDO_DIAS","FL_ATRASADO"]:
             if col in df_exibir.columns:
-                df_exibir[col] = df_exibir[col].apply(
-                    lambda v: str(int(float(v))) if pd.notna(v) and v is not None else None
-                )
+                df_exibir[col] = df_exibir[col].apply(_fmt_int_str)
         for col in ["SCORE"]:
             if col in df_exibir.columns:
                 df_exibir[col] = df_exibir[col].apply(
