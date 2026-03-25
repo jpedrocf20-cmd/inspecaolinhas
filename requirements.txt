@@ -10,3 +10,4 @@ msal
 python-dotenv
 scipy
 matplotlib>=3.9.0
+openpyx1>=3.1.0
