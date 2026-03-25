@@ -343,77 +343,28 @@ with tab_mapa:
 with tab_rota:
     if df_rota is not None:
         st.markdown(f"#### Rota com {len(df_rota)} torres — distância total: **{resumo['distancia_total']} km**")
-        colunas_exibir = [
-            "ORDEM_VISITA", "COD_ATIVO", "NUM_TORRE", "EMPRESA", "INSTALACAO",
-            "CRITICIDADE_MIN", "QTD_SS", "PIOR_SALDO_DIAS", "FL_ATRASADO",
-            "SCORE", "DIST_PROX_KM", "DIST_ACUM_KM",
-        ]
-        colunas_disponiveis = [c for c in colunas_exibir if c in df_rota.columns]
-        CORES_NIVEL = {
-            1: "background-color:#FF2D2D33;color:#FF6B6B;font-weight:bold",
-            2: "background-color:#FF6B2D33;color:#FFA07A;font-weight:bold",
-            3: "background-color:#FFA50033;color:#FFC04D",
-            4: "background-color:#FFD70033;color:#FFE680",
-            5: "background-color:#90EE9033;color:#B8F0B8",
-            6: "background-color:#4CAF5033;color:#81C784",
-        }
-        def _style_criticidade(val):
-            try:
-                if val in ("–", "", None): return ""
-                return CORES_NIVEL.get(int(float(str(val))), "")
-            except: return ""
-        def _style_atrasado(val):
-            try:
-                if val in ("–", "", None): return ""
-                return "color:#FF6B6B;font-weight:bold" if int(float(str(val))) == 1 else "color:#81C784"
-            except: return ""
-        def _style_score(val):
-            try:
-                if val in ("–", "", None): return ""
-                v = float(str(val))
-                if v >= 80: return "background-color:#00CFFF33;color:#00CFFF;font-weight:bold"
-                if v >= 50: return "background-color:#0080FF22;color:#7EC8FF"
-                return ""
-            except: return ""
 
-        df_display = df_rota[colunas_disponiveis].copy()
+        # ── Legenda do Score ──
+        with st.expander("ℹ️ Como o Score é calculado?", expanded=False):
+            st.markdown("""
+            O **Score (0–100%)** representa a urgência de inspeção de cada torre.
+            Quanto mais próximo de 100%, mais crítica e urgente é a visita.
 
-        # ── Formata colunas numéricas — sem casas decimais desnecessárias ──
-        colunas_inteiras = ["ORDEM_VISITA", "NUM_TORRE", "CRITICIDADE_MIN",
-                            "QTD_SS", "PIOR_SALDO_DIAS", "FL_ATRASADO"]
-        colunas_float1   = ["DIST_PROX_KM", "DIST_ACUM_KM"]
-        colunas_float2   = ["SCORE"]
+            | Componente | Peso | Máximo |
+            |---|---|---|
+            | 🔴 Criticidade (nível 1 a 6) | Nível 1 vale 60 pts, nível 6 vale 0 pts | 60 pts |
+            | 📋 Qtd. de ocorrências abertas (cap 20) | 2 pts por OS | 40 pts |
+            | ⚠️ Dias de atraso (cap 20 dias, só se atrasada) | 5 pts por dia | 100 pts |
 
-        def _fmt_int(v):
-            try:
-                if v is None: return "–"
-                s = str(v).strip()
-                if s in ("", "None", "nan", "NaN", "NaT"): return "–"
-                return str(int(float(s)))
-            except Exception:
-                return "–"
+            **Exemplo:** Torre nível 1, 5 OS, 10 dias atrasada →
+            60 + 10 + 50 = 120 pts brutos → **Score = 60%**
+            """)
 
-        def _fmt_f1(v):
-            try:
-                if v is None: return "–"
-                s = str(v).strip()
-                if s in ("", "None", "nan", "NaN", "NaT"): return "–"
-                return f"{float(s):.1f}"
-            except Exception:
-                return "–"
+        # ── Prepara exibição ──
+        df_exibir = df_rota.copy()
 
-        for col in colunas_inteiras:
-            if col in df_display.columns:
-                df_display[col] = df_display[col].apply(_fmt_int)
-        for col in colunas_float1:
-            if col in df_display.columns:
-                df_display[col] = df_display[col].apply(_fmt_f1)
-        for col in colunas_float2:
-            if col in df_display.columns:
-                df_display[col] = df_display[col].apply(_fmt_f1)
-
-        # Renomeia colunas para nomes amigáveis
-        rename_rota = {
+        # Renomeia colunas para português
+        rename = {
             "ORDEM_VISITA":   "Ordem",
             "COD_ATIVO":      "Ativo",
             "NUM_TORRE":      "Torre",
@@ -423,81 +374,60 @@ with tab_rota:
             "QTD_SS":         "Qtd SS",
             "PIOR_SALDO_DIAS":"Pior saldo (dias)",
             "FL_ATRASADO":    "Atrasado",
-            "SCORE":          "Score",
+            "SCORE":          "Score (%)",
             "DIST_PROX_KM":   "Dist. próx (km)",
             "DIST_ACUM_KM":   "Dist. acum (km)",
         }
-        df_display = df_display.rename(columns={k: v for k, v in rename_rota.items() if k in df_display.columns})
+        colunas_exibir = [k for k in rename if k in df_exibir.columns]
+        df_exibir = df_exibir[colunas_exibir].rename(columns=rename)
 
-        # Reconstrói subset com nomes já renomeados
-        col_crit    = rename_rota.get("CRITICIDADE_MIN", "Criticidade")
-        col_atras   = rename_rota.get("FL_ATRASADO", "Atrasado")
-        col_score   = rename_rota.get("SCORE", "Score")
+        # Converte FL_ATRASADO de 0/1 para texto legível
+        if "Atrasado" in df_exibir.columns:
+            df_exibir["Atrasado"] = df_exibir["Atrasado"].apply(
+                lambda v: "⚠️ Sim" if int(float(v)) == 1 else "—"
+                if str(v) not in ["", "nan"] else "—"
+            )
 
-        styled = df_display.style
-        if col_crit in df_display.columns:
-            styled = styled.map(_style_criticidade, subset=[col_crit])
-        if col_atras in df_display.columns:
-            styled = styled.map(_style_atrasado, subset=[col_atras])
-        if col_score in df_display.columns:
-            styled = styled.map(_style_score, subset=[col_score])
-
-        st.dataframe(styled, use_container_width=True, hide_index=True)
-        csv = df_rota[colunas_disponiveis].to_csv(index=False).encode("utf-8")
+        st.dataframe(
+            df_exibir.style
+            .background_gradient(subset=["Criticidade"], cmap="RdYlGn_r")
+            .background_gradient(subset=["Score (%)"], cmap="Blues")
+            .map(
+                lambda v: "color: #FF6B6B; font-weight:bold" if v == "⚠️ Sim" else "",
+                subset=["Atrasado"],
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        csv = df_exibir.to_csv(index=False).encode("utf-8")
         st.download_button("📥 Exportar rota CSV", csv, "rota_inspecao.csv", "text/csv")
     else:
         st.info("Gere a rota para ver o detalhamento aqui.")
 
 with tab_clima:
     if weather_map:
-        # Verifica se há erro de API key em qualquer entrada
-        erros_api = [
-            info.get("erro", "") for info in weather_map.values()
-            if isinstance(info, dict) and not info.get("ok")
-        ]
-        if erros_api:
-            primeiro_erro = erros_api[0]
-            if "API_KEY" in primeiro_erro or "api key" in primeiro_erro.lower() or "401" in primeiro_erro:
-                st.error(
-                    "🔑 **Chave da API OpenWeather não configurada ou inválida.**\n\n"
-                    "**No Streamlit Cloud:** acesse *Settings → Secrets* e adicione:\n"
-                    "```\nOPENWEATHER_API_KEY = \"sua_chave_aqui\"\n```\n"
-                    "**Localmente:** adicione no arquivo `.env`:\n"
-                    "```\nOPENWEATHER_API_KEY=sua_chave_aqui\n```"
-                )
-            else:
-                st.warning(f"⚠️ Erro ao consultar clima: {primeiro_erro}")
-
         dados_clima = []
         for cod, info in weather_map.items():
-            if not isinstance(info, dict):
-                continue
-            dados_clima.append({
-                "Torre (COD_ATIVO)": cod,
-                "Condição":    info.get("descricao", "N/D") if info.get("ok") else f"❌ {info.get('erro', 'Erro')}",
-                "Temp (°C)":   info.get("temperatura", "-") if info.get("ok") else "-",
-                "Umidade (%)": info.get("umidade", "-") if info.get("ok") else "-",
-                "Vento (km/h)": info.get("vento_kmh", "-") if info.get("ok") else "-",
-                "Chuva (mm/h)": info.get("chuva_mm", "-") if info.get("ok") else "-",
-                "risco_bool":  bool(info.get("risco", False)),
-                "Status":      "RISCO" if info.get("risco", False) else "OK",
-            })
-
-        if not dados_clima:
-            st.info("Nenhum dado climático disponível para as torres selecionadas.")
-        else:
-            df_clima = pd.DataFrame(dados_clima)
-            n_risco = int(df_clima["risco_bool"].sum())
-            if n_risco:
-                _modo = st.session_state["modo_conservador"]
-                st.markdown(
-                    f'<div class="clima-alert">⛔ <b>{n_risco} torres</b> com condição climática adversa '
-                    f'{"foram removidas da rota" if _modo else "estão na rota (modo não conservador)"}.</div>',
-                    unsafe_allow_html=True,
-                )
-            df_exibir = df_clima.drop(columns=["risco_bool"]).copy()
-            df_exibir["Status"] = df_exibir["Status"].replace({"RISCO": "⛔ RISCO", "OK": "✅ OK"})
-            st.dataframe(df_exibir, use_container_width=True, hide_index=True)
+            if info.get("ok"):
+                dados_clima.append({
+                    "Torre (COD_ATIVO)": cod,
+                    "Condição":    info["descricao"],
+                    "Temp (°C)":   info["temperatura"],
+                    "Umidade (%)": info["umidade"],
+                    "Vento (km/h)": info["vento_kmh"],
+                    "Chuva (mm/h)": info["chuva_mm"],
+                    "Status":      "⛔ RISCO" if info["risco"] else "✅ OK",
+                })
+        df_clima = pd.DataFrame(dados_clima)
+        torres_risco = df_clima[df_clima["Status"] == "⛔ RISCO"]
+        if len(torres_risco):
+            _modo = st.session_state["modo_conservador"]
+            st.markdown(
+                f'<div class="clima-alert">⛔ <b>{len(torres_risco)} torres</b> com condição climática adversa '
+                f'{"foram removidas da rota" if _modo else "estão na rota (modo não conservador)"}.</div>',
+                unsafe_allow_html=True,
+            )
+        st.dataframe(df_clima, use_container_width=True, hide_index=True)
     else:
         st.info("Gere a rota para ver as condições climáticas.")
 
@@ -516,8 +446,8 @@ with tab_ocorrencias:
                 if df_oc.empty:
                     st.info("Nenhuma ocorrência pendente para esta torre.")
                 else:
-                    # Renomeia colunas para exibição amigável
-                    rename_map = {
+                    # Renomeia para exibição amigável
+                    rename_oc = {
                         "COD_SS":           "Cód. SS",
                         "COD_ATIVO":        "Ativo",
                         "NOME_PRIORIDADE":  "Prioridade",
@@ -526,17 +456,20 @@ with tab_ocorrencias:
                         "PRAZO_DIAS":       "Prazo (dias)",
                         "SALDO_DIAS":       "Saldo (dias)",
                         "STATUS_PRAZO":     "Status do prazo",
-                        "DESCRICAO_SS":     "Descrição",
-                        "DESCRICAO":        "Descrição",
-                        "DESC_SS":          "Descrição",
-                        "OBSERVACAO":       "Observação",
-                        "DETALHE":          "Detalhe",
-                        "TEXTO_SS":         "Texto SS",
+                        "TEXT_OBSERVACAO":  "Observação / Causa",
                     }
-                    df_exibir_oc = df_oc.rename(columns={
-                        k: v for k, v in rename_map.items() if k in df_oc.columns
-                    })
-                    st.dataframe(df_exibir_oc, use_container_width=True, hide_index=True)
+                    cols_disp = [k for k in rename_oc if k in df_oc.columns]
+                    df_oc_exibir = df_oc[cols_disp].rename(columns=rename_oc)
+
+                    st.dataframe(
+                        df_oc_exibir.style.map(
+                            lambda v: "color: #FF6B6B; font-weight:bold"
+                            if isinstance(v, str) and "Atrasado" in v else "",
+                            subset=["Status do prazo"] if "Status do prazo" in df_oc_exibir.columns else [],
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
             except Exception as e:
                 st.error(f"Erro ao carregar ocorrências: {e}")
     else:
