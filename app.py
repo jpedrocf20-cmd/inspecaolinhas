@@ -380,7 +380,9 @@ with tab_rota:
                 df_exibir[col] = df_exibir[col].apply(_fmt_int)
         for col in ["SCORE"]:
             if col in df_exibir.columns:
-                df_exibir[col] = df_exibir[col].apply(_fmt_f1)
+                df_exibir[col] = df_exibir[col].apply(
+                    lambda v: f"{int(round(float(v)))}%" if v is not None else "–"
+                )
         for col in ["DIST_PROX_KM","DIST_ACUM_KM"]:
             if col in df_exibir.columns:
                 df_exibir[col] = df_exibir[col].apply(
@@ -425,7 +427,7 @@ with tab_rota:
             except: return ""
         def _s_score(v):
             try:
-                f = float(v)
+                f = float(str(v).replace("%", ""))
                 if f >= 80: return "background:#FF2D2D33;color:#FF6B6B;font-weight:bold"
                 if f >= 60: return "background:#FF6B2D33;color:#FFA07A"
                 if f >= 40: return "background:#FFA50033;color:#FFC04D"
