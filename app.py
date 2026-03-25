@@ -2,10 +2,14 @@
 app.py — App principal de roteirização de inspeção de linhas de transmissão.
 """
 
+import io
 import time
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 from services.database import (
     iniciar_device_flow, concluir_login, is_authenticated,
@@ -448,11 +452,6 @@ with tab_rota:
         st.dataframe(styled, use_container_width=True, hide_index=True)
 
         # ── Exportar Excel formatado ──
-        import io
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, GradientFill
-        from openpyxl.utils import get_column_letter
-
         def _gerar_excel_rota(df: pd.DataFrame) -> bytes:
             wb = Workbook()
             ws = wb.active
@@ -634,11 +633,6 @@ with tab_ocorrencias:
                         use_container_width=True,
                         hide_index=True,
                     )
-                    import io
-                    from openpyxl import Workbook
-                    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-                    from openpyxl.utils import get_column_letter
-
                     def _gerar_excel_ocorrencias(df: pd.DataFrame, cod_ativo: str) -> bytes:
                         wb = Workbook()
                         ws = wb.active
