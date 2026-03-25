@@ -358,14 +358,19 @@ with tab_rota:
             6: "background-color:#4CAF5033;color:#81C784",
         }
         def _style_criticidade(val):
-            try:    return CORES_NIVEL.get(int(val), "")
+            try:
+                if val in ("–", "", None): return ""
+                return CORES_NIVEL.get(int(float(str(val))), "")
             except: return ""
         def _style_atrasado(val):
-            try:    return "color:#FF6B6B;font-weight:bold" if int(val) == 1 else "color:#81C784"
+            try:
+                if val in ("–", "", None): return ""
+                return "color:#FF6B6B;font-weight:bold" if int(float(str(val))) == 1 else "color:#81C784"
             except: return ""
         def _style_score(val):
             try:
-                v = float(val)
+                if val in ("–", "", None): return ""
+                v = float(str(val))
                 if v >= 80: return "background-color:#00CFFF33;color:#00CFFF;font-weight:bold"
                 if v >= 50: return "background-color:#0080FF22;color:#7EC8FF"
                 return ""
