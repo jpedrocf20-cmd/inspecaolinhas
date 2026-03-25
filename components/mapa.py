@@ -224,6 +224,25 @@ def build_map(
 
             layer_rota.add_to(mapa)
 
+    # ── Correção: força color-scheme:light dentro do iframe do Folium ──
+    # O Streamlit injeta color-scheme:dark no documento pai, o que vaza
+    # para o iframe e escurece o canvas do Leaflet ao interagir (pan/zoom).
+    mapa.get_root().header.add_child(folium.Element("""
+<style>
+    html, body {
+        color-scheme: light !important;
+        background-color: transparent !important;
+    }
+    .leaflet-container {
+        background: #1a1a2e !important;
+        color-scheme: light !important;
+    }
+    .leaflet-tile-pane img {
+        filter: none !important;
+    }
+</style>
+"""))
+
     # Legenda
     legenda_html = """
     <div style='
