@@ -38,6 +38,22 @@ def _safe_int(val, fallback="–") -> str:
         return str(fallback)
 
 
+def _saldo_label(val) -> str:
+    """Retorna label contextual para PIOR_SALDO_DIAS."""
+    try:
+        return "Maior atraso" if float(val) < 0 else "Maior folga"
+    except (ValueError, TypeError):
+        return "Saldo (dias)"
+
+
+def _saldo_valor(val) -> str:
+    """Retorna valor absoluto de PIOR_SALDO_DIAS como string inteira."""
+    try:
+        return str(abs(int(float(val))))
+    except (ValueError, TypeError):
+        return "–"
+
+
 def _popup_html(row: pd.Series, clima: dict | None) -> str:
     cor    = _cor_criticidade(row["CRITICIDADE_MIN"])
     clima_html = ""
@@ -75,7 +91,7 @@ def _popup_html(row: pd.Series, clima: dict | None) -> str:
         <b>Empresa:</b> {row.get('EMPRESA','–')}<br>
         <b>Instalação:</b> {row.get('INSTALACAO','–')}<br>
         <b>Ocorrências:</b> {_safe_int(row.get('QTD_SS', 0))}<br>
-        <b>Maior atraso:</b> {_safe_int(row.get('PIOR_SALDO_DIAS', 0))} dias<br>
+        <b>{_saldo_label(row.get('PIOR_SALDO_DIAS', 0))}:</b> {_saldo_valor(row.get('PIOR_SALDO_DIAS', 0))} dias<br>
         <b>Status:</b> {atraso_badge}
         {clima_html}
     </div>
