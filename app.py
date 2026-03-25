@@ -378,9 +378,14 @@ with tab_rota:
         for col in ["ORDEM_VISITA","NUM_TORRE","CRITICIDADE_MIN","QTD_SS","PIOR_SALDO_DIAS","FL_ATRASADO"]:
             if col in df_exibir.columns:
                 df_exibir[col] = df_exibir[col].apply(_fmt_int)
-        for col in ["SCORE","DIST_PROX_KM","DIST_ACUM_KM"]:
+        for col in ["SCORE"]:
             if col in df_exibir.columns:
                 df_exibir[col] = df_exibir[col].apply(_fmt_f1)
+        for col in ["DIST_PROX_KM","DIST_ACUM_KM"]:
+            if col in df_exibir.columns:
+                df_exibir[col] = df_exibir[col].apply(
+                    lambda v: f"{float(v):.1f}" if v is not None else "–"
+                )
 
         # Renomeia colunas para português
         rename = {
@@ -525,6 +530,13 @@ with tab_ocorrencias:
                         key=f"dl_oc_{torre_sel}",
                     )
             except Exception as e:
-                st.error(f"Erro ao carregar ocorrências: {e}")
+                err = str(e)
+                if "18456" in err or "authentication" in err.lower() or "login" in err.lower():
+                    st.error(
+                        "❌ **Erro de autenticação ao carregar ocorrências.**\n\n"
+                        "Seu token de sessão pode ter expirado. Clique em **Sair** na sidebar e faça login novamente."
+                    )
+                else:
+                    st.error(f"Erro ao carregar ocorrências: {e}")
     else:
         st.info("Gere a rota para consultar ocorrências por torre.")
