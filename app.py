@@ -13,8 +13,8 @@ from openpyxl.utils import get_column_letter
 
 from services.database import (
     iniciar_device_flow, concluir_login, is_authenticated,
-    tentar_login_silencioso,
-    load_torres_criticidade, get_filter_options,
+    tentar_login_silencioso, logout,
+    load_torres_criticidade, get_filter_options, load_torres_por_instalacao,
 )
 from services.weather  import get_weather, weather_badge
 from components.mapa   import build_map
@@ -171,15 +171,15 @@ for key, default in [
     ("_device_flow", None),
     ("_msal_app", None),
     ("_msal_token_cache", None),   # cache serializado para renovação silenciosa
+    ("_torres_partida", []),       # torres disponíveis para ponto de partida
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
 
 # ── Tentativa de renovação silenciosa de token ──
-# Se o usuário já autenticou anteriormente (nesta sessão do navegador ou em
-# uma sessão anterior cujo cache foi preservado), tenta renovar o access token
-# sem interação. Só executa se ainda não estiver autenticado neste rerun.
-if not is_authenticated() and st.session_state.get("_msal_token_cache"):
+# Tenta recuperar do cookie do browser mesmo com session_state limpo
+# (cobre reload de página e sessões novas dentro do TTL de 48h).
+if not is_authenticated():
     tentar_login_silencioso()
 
 
@@ -242,10 +242,7 @@ with st.sidebar:
     # ── USUÁRIO LOGADO ──
     st.success(f"✅ {st.session_state['fabric_user']}")
     if st.button("Sair"):
-        for k in ["fabric_authed", "fabric_token", "fabric_user",
-                  "df_rota", "df_base", "weather_map", "resumo",
-                  "_device_flow", "_msal_app", "_msal_token_cache"]:
-            st.session_state[k] = None if k != "fabric_authed" else False
+        logout()
         st.rerun()
 
     st.divider()
@@ -263,7 +260,6 @@ with st.sidebar:
 
     # Filtra instalações com base na empresa selecionada
     if empresa_sel == "Todas":
-        # Todas as instalações de todas as empresas, sem duplicatas
         todas = []
         for lst in instalacoes_por_empresa.values():
             todas.extend(lst)
@@ -291,11 +287,40 @@ with st.sidebar:
         help="Torres com FL_ATRASADO=1 sempre entram na rota",
     )
 
+    # ── Ponto de partida — combobox filtrado por empresa/instalação ──
     st.markdown("##### 📍 Ponto de partida (opcional)")
-    col_lat, col_lon = st.columns(2)
-    lat_base = col_lat.number_input("Lat", value=None, placeholder="-23.5")
-    lon_base = col_lon.number_input("Lon", value=None, placeholder="-46.6")
-    ponto_partida = (lat_base, lon_base) if (lat_base and lon_base) else None
+
+    # Carrega torres da instalação selecionada (cacheado)
+    _emp_key = None if empresa_sel == "Todas" else empresa_sel
+    _ins_key = None if instalacao_sel == "Todas" else instalacao_sel
+
+    try:
+        if _emp_key or _ins_key:
+            df_torres_partida = load_torres_por_instalacao(_emp_key, _ins_key)
+        else:
+            df_torres_partida = pd.DataFrame()
+    except Exception:
+        df_torres_partida = pd.DataFrame()
+
+    ponto_partida = None
+    if df_torres_partida.empty:
+        st.caption("Selecione uma empresa e/ou instalação para escolher o ponto de partida.")
+    else:
+        # Monta as opções: "Torre 31 — 0011933"
+        opcoes_partida = ["— Nenhum (início automático) —"] + [
+            f"Torre {row['NUM_TORRE']} — {row['COD_ATIVO']}"
+            for _, row in df_torres_partida.iterrows()
+        ]
+        sel_partida = st.selectbox(
+            "Torre de partida",
+            opcoes_partida,
+            help="A rota começa pela torre mais próxima desta, na sequência otimizada.",
+        )
+        if sel_partida != opcoes_partida[0]:
+            # Recupera lat/lon da torre selecionada
+            idx_sel = opcoes_partida.index(sel_partida) - 1  # -1 por causa do "Nenhum"
+            row_sel = df_torres_partida.iloc[idx_sel]
+            ponto_partida = (float(row_sel["LATITUDE"]), float(row_sel["LONGITUDE"]))
 
     st.divider()
     gerar = st.button("🚀 Gerar Rota Otimizada", type="primary")
