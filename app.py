@@ -402,12 +402,20 @@ tab_mapa, tab_rota, tab_clima, tab_ocorrencias = st.tabs([
 
 with tab_mapa:
     if df_base is not None:
+        # Gera chave estável baseada no conteúdo da rota.
+        # O mapa só é reconstruído quando o usuário clica em "Gerar Rota Otimizada"
+        # e os dados mudam — qualquer outro rerun do Streamlit mantém o mapa intacto.
+        _rota_hash = (
+            str(len(df_rota)) + "_" + str(df_rota["COD_ATIVO"].iloc[0] if df_rota is not None and not df_rota.empty else "")
+            if df_rota is not None and not df_rota.empty
+            else "sem_rota_" + str(len(df_base))
+        )
         mapa = build_map(df=df_base, df_rota=df_rota, weather_map=weather_map)
         st_folium(
             mapa,
             use_container_width=True,
             height=580,
-            key="mapa_principal",
+            key=f"mapa_{_rota_hash}",
             returned_objects=[],
         )
     else:
