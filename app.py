@@ -290,23 +290,31 @@ with st.sidebar:
     # ── Ponto de partida — combobox filtrado por empresa/instalação ──
     st.markdown("##### 📍 Ponto de partida (opcional)")
 
-    # Carrega torres da instalação selecionada (cacheado)
     _emp_key = None if empresa_sel == "Todas" else empresa_sel
     _ins_key = None if instalacao_sel == "Todas" else instalacao_sel
 
-    try:
-        if _emp_key or _ins_key:
+    # Detecta mudança nos filtros e reseta a seleção de torre de partida
+    _filtro_atual = f"{_emp_key}|{_ins_key}"
+    if st.session_state.get("_filtro_partida_anterior") != _filtro_atual:
+        st.session_state["_filtro_partida_anterior"] = _filtro_atual
+        st.session_state["_sel_partida"] = 0  # reseta para "Nenhum"
+
+    # Só carrega o seletor quando a INSTALAÇÃO estiver definida.
+    # Sem instalação específica a lista pode ter centenas de torres.
+    df_torres_partida = pd.DataFrame()
+    _motivo_vazio = "Selecione uma instalação específica para escolher o ponto de partida."
+
+    if _ins_key:
+        try:
             df_torres_partida = load_torres_por_instalacao(_emp_key, _ins_key)
-        else:
+        except Exception:
             df_torres_partida = pd.DataFrame()
-    except Exception:
-        df_torres_partida = pd.DataFrame()
+        _motivo_vazio = "Nenhuma torre encontrada para a instalação selecionada."
 
     ponto_partida = None
     if df_torres_partida.empty:
-        st.caption("Selecione uma empresa e/ou instalação para escolher o ponto de partida.")
+        st.caption(_motivo_vazio)
     else:
-        # Monta as opções: "Torre 31 — 0011933"
         opcoes_partida = ["— Nenhum (início automático) —"] + [
             f"Torre {row['NUM_TORRE']} — {row['COD_ATIVO']}"
             for _, row in df_torres_partida.iterrows()
@@ -314,11 +322,15 @@ with st.sidebar:
         sel_partida = st.selectbox(
             "Torre de partida",
             opcoes_partida,
+            index=st.session_state.get("_sel_partida", 0),
+            key="selectbox_torre_partida",
             help="A rota começa pela torre mais próxima desta, na sequência otimizada.",
         )
+        # Persiste o índice para sobreviver a reruns sem resetar
+        st.session_state["_sel_partida"] = opcoes_partida.index(sel_partida)
+
         if sel_partida != opcoes_partida[0]:
-            # Recupera lat/lon da torre selecionada
-            idx_sel = opcoes_partida.index(sel_partida) - 1  # -1 por causa do "Nenhum"
+            idx_sel = opcoes_partida.index(sel_partida) - 1  # -1 pelo "Nenhum"
             row_sel = df_torres_partida.iloc[idx_sel]
             ponto_partida = (float(row_sel["LATITUDE"]), float(row_sel["LONGITUDE"]))
 
