@@ -64,10 +64,16 @@ def _get_token_cache() -> SerializableTokenCache:
     """
     Obtém o cache de tokens.
     Prioridade: session_state (rápido) → cookie do browser → cache vazio.
+
+    O extra_streamlit_components precisa de um ciclo de render para inicializar
+    o componente de cookie no browser. Na primeira execução após F5, o cookie
+    pode ainda não estar disponível. Usamos um flag '_cookie_checked' para
+    detectar esse caso e forçar um rerun automático, garantindo que na segunda
+    passagem o cookie já seja lido corretamente.
     """
     cache = SerializableTokenCache()
 
-    # 1. Session state (evita leitura de cookie a cada rerun)
+    # 1. Session state — caminho rápido, sem I/O de cookie
     cached_state = st.session_state.get("_msal_token_cache")
     if cached_state:
         cache.deserialize(cached_state)
@@ -77,13 +83,22 @@ def _get_token_cache() -> SerializableTokenCache:
     mgr = _get_cookie_manager()
     if mgr:
         cookie_val = mgr.get(_COOKIE_NAME)
+
         if cookie_val:
             try:
                 cache.deserialize(cookie_val)
-                # Espelha na session para reruns seguintes
                 st.session_state["_msal_token_cache"] = cookie_val
+                st.session_state["_cookie_checked"] = True
             except Exception:
-                pass
+                st.session_state["_cookie_checked"] = True
+        else:
+            # Cookie não disponível ainda — verifica se já tentamos antes
+            if not st.session_state.get("_cookie_checked"):
+                # Primeira tentativa: o componente pode não ter inicializado.
+                # Marca e força um rerun para dar tempo ao browser.
+                st.session_state["_cookie_checked"] = True
+                st.rerun()
+            # Segunda tentativa em diante: cookie realmente não existe (não logado)
 
     return cache
 
@@ -110,6 +125,7 @@ def _save_token_cache(cache: SerializableTokenCache) -> None:
 def _delete_token_cache() -> None:
     """Remove o cache da session e do cookie (usado no logout)."""
     st.session_state.pop("_msal_token_cache", None)
+    st.session_state.pop("_cookie_checked", None)  # reseta para próxima sessão
     mgr = _get_cookie_manager()
     if mgr:
         try:
