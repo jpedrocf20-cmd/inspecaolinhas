@@ -13,6 +13,7 @@ from openpyxl.utils import get_column_letter
 
 from services.database import (
     iniciar_device_flow, concluir_login, is_authenticated,
+    tentar_login_silencioso,
     load_torres_criticidade, get_filter_options,
 )
 from services.weather  import get_weather, weather_badge
@@ -132,15 +133,24 @@ st.markdown("""
 
     /* ── PROTEÇÃO DO IFRAME DO MAPA FOLIUM ──
        Força color-scheme:light no iframe para evitar que o tema escuro
-       do Streamlit vaze e escureça o canvas do Leaflet ao interagir. */
+       do Streamlit vaze e escureça o canvas do Leaflet ao interagir.
+       "light only" impede herança do color-scheme pai completamente. */
     iframe {
-        color-scheme: light !important;
+        color-scheme: light only !important;
     }
     [data-testid="stCustomComponentV1"] > div > iframe,
-    .stIFrame > iframe {
-        color-scheme: light !important;
+    .element-container iframe,
+    .stIFrame > iframe,
+    .stIframe > iframe {
+        color-scheme: light only !important;
         background-color: transparent !important;
         filter: none !important;
+        /* Evita piscar preto durante re-render do Streamlit */
+        content-visibility: auto !important;
+    }
+    /* Previne que o container do mapa pisque ao trocar de aba */
+    [data-testid="stCustomComponentV1"] {
+        min-height: 0 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -160,9 +170,17 @@ for key, default in [
     ("modo_conservador", True),
     ("_device_flow", None),
     ("_msal_app", None),
+    ("_msal_token_cache", None),   # cache serializado para renovação silenciosa
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
+
+# ── Tentativa de renovação silenciosa de token ──
+# Se o usuário já autenticou anteriormente (nesta sessão do navegador ou em
+# uma sessão anterior cujo cache foi preservado), tenta renovar o access token
+# sem interação. Só executa se ainda não estiver autenticado neste rerun.
+if not is_authenticated() and st.session_state.get("_msal_token_cache"):
+    tentar_login_silencioso()
 
 
 # ──────────────────────────────────────────────
@@ -226,7 +244,7 @@ with st.sidebar:
     if st.button("Sair"):
         for k in ["fabric_authed", "fabric_token", "fabric_user",
                   "df_rota", "df_base", "weather_map", "resumo",
-                  "_device_flow", "_msal_app"]:
+                  "_device_flow", "_msal_app", "_msal_token_cache"]:
             st.session_state[k] = None if k != "fabric_authed" else False
         st.rerun()
 
@@ -360,7 +378,13 @@ tab_mapa, tab_rota, tab_clima, tab_ocorrencias = st.tabs([
 with tab_mapa:
     if df_base is not None:
         mapa = build_map(df=df_base, df_rota=df_rota, weather_map=weather_map)
-        st_folium(mapa, use_container_width=True, height=580)
+        st_folium(
+            mapa,
+            use_container_width=True,
+            height=580,
+            key="mapa_principal",
+            returned_objects=[],
+        )
     else:
         st.info("👈 Configure os filtros e clique em **Gerar Rota Otimizada** para visualizar o mapa.")
         import folium
@@ -369,7 +393,13 @@ with tab_mapa:
             tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
             attr="Esri", name="🛰️ Satélite",
         ).add_to(mapa_vazio)
-        st_folium(mapa_vazio, use_container_width=True, height=500)
+        st_folium(
+            mapa_vazio,
+            use_container_width=True,
+            height=500,
+            key="mapa_vazio",
+            returned_objects=[],
+        )
 
 with tab_rota:
     if df_rota is not None:
