@@ -145,6 +145,16 @@ def build_map(
         control=True,
     ).add_to(mapa)
 
+    # Rótulos de cidades/ruas sobre o satélite (overlay sempre visível com satélite)
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri",
+        name="🏷️ Rótulos",
+        overlay=True,
+        control=True,
+        show=True,
+    ).add_to(mapa)
+
     # Camada 2 — CartoDB dark (alternativa)
     folium.TileLayer(
         tiles="CartoDB dark_matter",
@@ -257,7 +267,8 @@ def build_map(
         <span style='color:#90EE90'>●</span> Nível 5<br>
         <span style='color:#4CAF50'>●</span> Nível 6 — Normal<br>
         <hr style='border-color:rgba(255,255,255,0.2);margin:4px 0'>
-        <span style='color:#00CFFF'>- -</span> Rota otimizada
+        <span style='color:#00CFFF'>- -</span> Rota otimizada<br>
+        <span style='opacity:0.7;font-size:11px'>🏷️ Rótulos: ative/desative no controle</span>
     </div>
     """
     mapa.get_root().html.add_child(folium.Element(legenda_html))
