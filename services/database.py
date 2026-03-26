@@ -3,27 +3,29 @@ services/database.py
 Conexão com Microsoft Fabric usando Device Code Flow (suporta MFA obrigatório).
 O usuário autentica pelo navegador — o app nunca toca na senha.
 
-Login persistente via COOKIE no browser do usuário:
-  - Após autenticar, o refresh token é serializado e salvo em cookie (48h).
-  - A cada recarregamento a página tenta renovar silenciosamente.
-  - Funciona para múltiplos usuários simultâneos — cada um carrega o próprio cookie.
+Persistência de sessão — abordagem server-side (sem cookies):
+  - Após autenticar, o cache MSAL é salvo em disco (shelve) no servidor,
+    indexado por um token de sessão UUID gerado no login.
+  - O token de sessão é mantido na URL via st.query_params (?sid=...).
+  - No F5 ou reabertura da aba, o sid ainda está na URL e o cache MSAL
+    é recuperado do disco automaticamente — sem precisar de cookies.
+  - Funciona mesmo com bloqueadores de cookies corporativos.
+  - Cada usuário tem seu próprio sid; múltiplos usuários simultâneos OK.
+  - Sessões expiram após 48h (renovadas a cada uso).
 
-Dependência extra:
-    pip install extra-streamlit-components
+Sem dependências extras além do stdlib (shelve, uuid) e das já existentes.
+A dependência extra_streamlit_components pode ser removida do requirements.
 """
 
+import os
+import shelve
 import struct
+import time
+import uuid
 import pandas as pd
 import pyodbc
 import streamlit as st
 from msal import PublicClientApplication, SerializableTokenCache
-
-# Cookie manager — importado com try para evitar crash se não instalado
-try:
-    import extra_streamlit_components as stx
-    _COOKIE_MANAGER_AVAILABLE = True
-except ImportError:
-    _COOKIE_MANAGER_AVAILABLE = False
 
 # ──────────────────────────────────────────────
 # CONFIGURAÇÃO DO FABRIC
@@ -36,102 +38,149 @@ _PUBLIC_CLIENT_ID = "1950a258-227b-4e31-a9cf-717495945fc2"
 _SCOPE            = ["https://database.windows.net/user_impersonation"]
 _ODBC_DRIVER      = "ODBC Driver 17 for SQL Server"
 
-_COOKIE_NAME      = "msal_token_cache"
-_COOKIE_MAX_AGE   = 48 * 3600   # 48 horas em segundos
+# Arquivo shelve salvo na raiz do projeto (um nível acima de /services)
+_SHELVE_PATH = os.path.join(os.path.dirname(__file__), "..", ".session_cache")
+_SESSION_TTL = 48 * 3600   # 48 horas em segundos
+_SID_PARAM   = "sid"       # nome do query param na URL
 
 
 # ──────────────────────────────────────────────
-# COOKIE MANAGER (singleton por sessão)
+# PERSISTÊNCIA SERVER-SIDE (shelve em disco)
 # ──────────────────────────────────────────────
 
-@st.cache_resource
-def _get_cookie_manager():
+def _shelve_save(sid: str, token_cache_str: str, username: str) -> None:
+    """Salva o cache MSAL no disco associado ao sid."""
+    try:
+        with shelve.open(_SHELVE_PATH) as db:
+            db[sid] = {
+                "cache":    token_cache_str,
+                "username": username,
+                "ts":       time.time(),
+            }
+    except Exception:
+        pass
+
+
+def _shelve_load(sid: str) -> dict | None:
     """
-    Retorna o CookieManager singleton.
-    O @st.cache_resource garante que só existe uma instância por processo,
-    evitando o bug de múltiplas instâncias do extra-streamlit-components.
+    Carrega o cache do disco pelo sid.
+    Retorna None se não existir ou se tiver expirado (> 48h).
     """
-    if not _COOKIE_MANAGER_AVAILABLE:
+    try:
+        with shelve.open(_SHELVE_PATH) as db:
+            entry = db.get(sid)
+        if not entry:
+            return None
+        if time.time() - entry["ts"] > _SESSION_TTL:
+            _shelve_delete(sid)
+            return None
+        return entry
+    except Exception:
         return None
-    return stx.CookieManager()
+
+
+def _shelve_delete(sid: str) -> None:
+    """Remove a entrada do disco (logout ou expiração)."""
+    try:
+        with shelve.open(_SHELVE_PATH) as db:
+            if sid in db:
+                del db[sid]
+    except Exception:
+        pass
+
+
+def _shelve_touch(sid: str) -> None:
+    """Renova o timestamp para prorrogar o TTL a cada uso."""
+    try:
+        with shelve.open(_SHELVE_PATH) as db:
+            entry = db.get(sid)
+            if entry:
+                entry["ts"] = time.time()
+                db[sid] = entry
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────
-# TOKEN CACHE — persiste no cookie do browser
+# SID NA URL (query params)
+# ──────────────────────────────────────────────
+
+def _get_sid() -> str | None:
+    return st.query_params.get(_SID_PARAM)
+
+
+def _set_sid(sid: str) -> None:
+    st.query_params[_SID_PARAM] = sid
+
+
+def _clear_sid() -> None:
+    if _SID_PARAM in st.query_params:
+        del st.query_params[_SID_PARAM]
+
+
+# ──────────────────────────────────────────────
+# TOKEN CACHE MSAL
 # ──────────────────────────────────────────────
 
 def _get_token_cache() -> SerializableTokenCache:
     """
-    Obtém o cache de tokens.
-    Prioridade: session_state (rápido) → cookie do browser → cache vazio.
-
-    O extra_streamlit_components precisa de um ciclo de render para inicializar
-    o componente de cookie no browser. Na primeira execução após F5, o cookie
-    pode ainda não estar disponível. Usamos um flag '_cookie_checked' para
-    detectar esse caso e forçar um rerun automático, garantindo que na segunda
-    passagem o cookie já seja lido corretamente.
+    Obtém o cache MSAL.
+    Prioridade: session_state (rápido, sem I/O) → shelve via sid na URL → vazio.
     """
     cache = SerializableTokenCache()
 
-    # 1. Session state — caminho rápido, sem I/O de cookie
+    # 1. Session state — caminho rápido
     cached_state = st.session_state.get("_msal_token_cache")
     if cached_state:
         cache.deserialize(cached_state)
         return cache
 
-    # 2. Cookie do browser
-    mgr = _get_cookie_manager()
-    if mgr:
-        cookie_val = mgr.get(_COOKIE_NAME)
-
-        if cookie_val:
+    # 2. Shelve via sid da URL
+    sid = _get_sid()
+    if sid:
+        entry = _shelve_load(sid)
+        if entry:
             try:
-                cache.deserialize(cookie_val)
-                st.session_state["_msal_token_cache"] = cookie_val
-                st.session_state["_cookie_checked"] = True
+                cache.deserialize(entry["cache"])
+                st.session_state["_msal_token_cache"] = entry["cache"]
+                st.session_state["_session_sid"]      = sid
             except Exception:
-                st.session_state["_cookie_checked"] = True
-        else:
-            # Cookie não disponível ainda — verifica se já tentamos antes
-            if not st.session_state.get("_cookie_checked"):
-                # Primeira tentativa: o componente pode não ter inicializado.
-                # Marca e força um rerun para dar tempo ao browser.
-                st.session_state["_cookie_checked"] = True
-                st.rerun()
-            # Segunda tentativa em diante: cookie realmente não existe (não logado)
+                pass
 
     return cache
 
 
-def _save_token_cache(cache: SerializableTokenCache) -> None:
+def _save_token_cache(cache: SerializableTokenCache, username: str = "Usuário") -> None:
     """
-    Persiste o cache na session_state E no cookie do browser.
-    O cookie dura 48h e está vinculado ao browser do usuário.
+    Persiste o cache no session_state + shelve em disco.
+    Cria um sid novo se necessário e o escreve na URL.
     """
+    # Mesmo sem mudança, renova o TTL
+    sid = st.session_state.get("_session_sid") or _get_sid()
     if not cache.has_state_changed:
+        if sid:
+            _shelve_touch(sid)
         return
 
     serialized = cache.serialize()
     st.session_state["_msal_token_cache"] = serialized
 
-    mgr = _get_cookie_manager()
-    if mgr:
-        try:
-            mgr.set(_COOKIE_NAME, serialized, max_age=_COOKIE_MAX_AGE)
-        except Exception:
-            pass  # Falha silenciosa — a sessão ainda funciona
+    if not sid:
+        sid = str(uuid.uuid4())
+        st.session_state["_session_sid"] = sid
+
+    _shelve_save(sid, serialized, username)
+    _set_sid(sid)
 
 
 def _delete_token_cache() -> None:
-    """Remove o cache da session e do cookie (usado no logout)."""
+    """Remove cache da session e do disco (logout)."""
+    sid = st.session_state.get("_session_sid") or _get_sid()
+    if sid:
+        _shelve_delete(sid)
     st.session_state.pop("_msal_token_cache", None)
-    st.session_state.pop("_cookie_checked", None)  # reseta para próxima sessão
-    mgr = _get_cookie_manager()
-    if mgr:
-        try:
-            mgr.delete(_COOKIE_NAME)
-        except Exception:
-            pass
+    st.session_state.pop("_session_sid",      None)
+    _clear_sid()
 
 
 def _build_msal_app(cache: SerializableTokenCache | None = None) -> PublicClientApplication:
@@ -148,10 +197,20 @@ def _build_msal_app(cache: SerializableTokenCache | None = None) -> PublicClient
 
 def tentar_login_silencioso() -> bool:
     """
-    Tenta renovar o access token silenciosamente a partir do cookie.
-    Chamado automaticamente no início de cada carregamento de página.
-    Retorna True se conseguiu, False se precisar de login interativo.
+    Tenta renovar o access token a partir do cache em disco (via sid na URL).
+    Chamado automaticamente no início de cada página.
+
+    Após F5 ou reabertura da aba:
+      - O sid continua na URL.
+      - O cache MSAL é recuperado do shelve.
+      - O access token é renovado silenciosamente via refresh token.
+      - Se o refresh token ainda for válido (até ~90 dias pela Microsoft),
+        o usuário entra sem nenhuma interação.
     """
+    sid = _get_sid()
+    if not sid:
+        return False
+
     cache = _get_token_cache()
     app   = _build_msal_app(cache)
 
@@ -162,12 +221,13 @@ def tentar_login_silencioso() -> bool:
     result = app.acquire_token_silent(scopes=_SCOPE, account=accounts[0])
 
     if result and "access_token" in result:
-        _save_token_cache(cache)
-        st.session_state["fabric_token"]  = result["access_token"]
-        st.session_state["fabric_user"]   = (
+        username = (
             result.get("id_token_claims", {}).get("preferred_username")
             or accounts[0].get("username", "Usuário")
         )
+        _save_token_cache(cache, username)
+        st.session_state["fabric_token"]  = result["access_token"]
+        st.session_state["fabric_user"]   = username
         st.session_state["fabric_authed"] = True
         return True
 
@@ -207,11 +267,13 @@ def concluir_login() -> bool:
         erro = result.get("error_description") or result.get("error") or str(result)
         raise RuntimeError(f"Autenticação não concluída: {erro}")
 
+    username = result.get("id_token_claims", {}).get("preferred_username", "Usuário")
+
     if cache:
-        _save_token_cache(cache)
+        _save_token_cache(cache, username)
 
     st.session_state["fabric_token"]  = result["access_token"]
-    st.session_state["fabric_user"]   = result.get("id_token_claims", {}).get("preferred_username", "Usuário")
+    st.session_state["fabric_user"]   = username
     st.session_state["fabric_authed"] = True
 
     st.session_state.pop("_msal_app",    None)
@@ -221,7 +283,7 @@ def concluir_login() -> bool:
 
 
 def logout() -> None:
-    """Desloga e apaga o cookie — o próximo acesso exigirá login."""
+    """Desloga, remove sessão do disco e limpa o sid da URL."""
     _delete_token_cache()
     for k in ["fabric_authed", "fabric_token", "fabric_user",
               "df_rota", "df_base", "weather_map", "resumo",
@@ -323,10 +385,6 @@ def load_ocorrencias(cod_ativo: str | None = None) -> pd.DataFrame:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_filter_options() -> dict:
-    """
-    Retorna empresas e instalações para os filtros da sidebar.
-    Inclui também as torres por instalação para o ponto de partida.
-    """
     query = """
         SELECT DISTINCT EMPRESA, INSTALACAO
         FROM VIEW_COORD_TORRES
@@ -354,10 +412,6 @@ def load_torres_por_instalacao(
     empresa: str | None = None,
     instalacao: str | None = None,
 ) -> pd.DataFrame:
-    """
-    Retorna COD_ATIVO, NUM_TORRE, LATITUDE, LONGITUDE das torres
-    filtradas por empresa e/ou instalação — usado no seletor de ponto de partida.
-    """
     where_clauses = ["LATITUDE IS NOT NULL", "LONGITUDE IS NOT NULL"]
     params = []
     if empresa:
