@@ -2,13 +2,17 @@
 services/database.py
 Conexão com Microsoft Fabric usando Device Code Flow (suporta MFA obrigatório).
 O usuário autentica pelo navegador — o app nunca toca na senha.
+
+Login persistente: após autenticar, o refresh token é mantido em cache serializado
+na sessão do Streamlit. A cada inicialização o app tenta renovar o access token
+silenciosamente (sem interação do usuário) por até 48 horas.
 """
 
 import struct
 import pandas as pd
 import pyodbc
 import streamlit as st
-from msal import PublicClientApplication
+from msal import PublicClientApplication, SerializableTokenCache
 
 # ──────────────────────────────────────────────
 # CONFIGURAÇÃO DO FABRIC
@@ -22,6 +26,79 @@ _PUBLIC_CLIENT_ID = "1950a258-227b-4e31-a9cf-717495945fc2"
 _SCOPE            = ["https://database.windows.net/user_impersonation"]
 _ODBC_DRIVER      = "ODBC Driver 17 for SQL Server"
 
+# Validade máxima do cache de refresh token (48 horas em segundos)
+_TOKEN_CACHE_TTL = 48 * 3600
+
+
+# ──────────────────────────────────────────────
+# TOKEN CACHE — persiste entre reruns do Streamlit
+# ──────────────────────────────────────────────
+
+def _get_token_cache() -> SerializableTokenCache:
+    """
+    Obtém (ou cria) o cache de tokens serializado armazenado na sessão.
+    O SerializableTokenCache guarda access tokens E refresh tokens, permitindo
+    que o MSAL renove o access token silenciosamente sem nova autenticação do usuário.
+    """
+    cache = SerializableTokenCache()
+    cached_state = st.session_state.get("_msal_token_cache")
+    if cached_state:
+        cache.deserialize(cached_state)
+    return cache
+
+
+def _save_token_cache(cache: SerializableTokenCache) -> None:
+    """Persiste o cache serializado na sessão após qualquer operação de token."""
+    if cache.has_state_changed:
+        st.session_state["_msal_token_cache"] = cache.serialize()
+
+
+def _build_msal_app(cache: SerializableTokenCache | None = None) -> PublicClientApplication:
+    """Cria o PublicClientApplication com o cache fornecido."""
+    return PublicClientApplication(
+        _PUBLIC_CLIENT_ID,
+        authority="https://login.microsoftonline.com/organizations",
+        token_cache=cache,
+    )
+
+
+# ──────────────────────────────────────────────
+# RENOVAÇÃO SILENCIOSA DE TOKEN
+# ──────────────────────────────────────────────
+
+def tentar_login_silencioso() -> bool:
+    """
+    Tenta renovar o access token silenciosamente usando o refresh token em cache.
+    Chamado automaticamente no início de cada sessão se houver cache salvo.
+    Retorna True se conseguiu renovar, False se não (precisa de login interativo).
+    """
+    cached_state = st.session_state.get("_msal_token_cache")
+    if not cached_state:
+        return False
+
+    cache = _get_token_cache()
+    app = _build_msal_app(cache)
+
+    # Lista contas disponíveis no cache
+    accounts = app.get_accounts()
+    if not accounts:
+        return False
+
+    # Tenta adquirir token silenciosamente para a primeira conta
+    result = app.acquire_token_silent(scopes=_SCOPE, account=accounts[0])
+
+    if result and "access_token" in result:
+        _save_token_cache(cache)
+        st.session_state["fabric_token"]  = result["access_token"]
+        st.session_state["fabric_user"]   = (
+            result.get("id_token_claims", {}).get("preferred_username")
+            or accounts[0].get("username", "Usuário")
+        )
+        st.session_state["fabric_authed"] = True
+        return True
+
+    return False
+
 
 # ──────────────────────────────────────────────
 # AUTENTICAÇÃO — Device Code Flow (suporta MFA)
@@ -33,11 +110,10 @@ def iniciar_device_flow() -> dict:
     Retorna o dict do flow com 'user_code' e 'verification_uri'.
     Salva o app MSAL na sessão para uso no passo 2.
     """
-    app = PublicClientApplication(
-        _PUBLIC_CLIENT_ID,
-        authority="https://login.microsoftonline.com/organizations",
-    )
-    st.session_state["_msal_app"] = app
+    cache = _get_token_cache()
+    app = _build_msal_app(cache)
+    st.session_state["_msal_app"]   = app
+    st.session_state["_msal_cache"] = cache  # guarda referência para salvar depois
 
     flow = app.initiate_device_flow(scopes=_SCOPE)
     if "user_code" not in flow:
@@ -53,10 +129,11 @@ def concluir_login() -> bool:
     """
     Passo 2: Aguarda confirmação do usuário e troca o device code pelo token.
     Deve ser chamado após o usuário clicar em 'Já autentiquei'.
-    Salva o token na sessão e retorna True se OK, levanta RuntimeError se falhou.
+    Salva o token e o cache na sessão. Retorna True se OK.
     """
-    app  = st.session_state.get("_msal_app")
-    flow = st.session_state.get("_device_flow")
+    app   = st.session_state.get("_msal_app")
+    flow  = st.session_state.get("_device_flow")
+    cache = st.session_state.get("_msal_cache")
 
     if not app or not flow:
         raise RuntimeError("Sessão expirada. Clique em 'Iniciar Login' novamente.")
@@ -68,12 +145,17 @@ def concluir_login() -> bool:
         erro = result.get("error_description") or result.get("error") or str(result)
         raise RuntimeError(f"Autenticação não concluída: {erro}")
 
+    # Persiste o cache com access + refresh tokens para renovação futura
+    if cache:
+        _save_token_cache(cache)
+
     st.session_state["fabric_token"]  = result["access_token"]
     st.session_state["fabric_user"]   = result.get("id_token_claims", {}).get("preferred_username", "Usuário")
     st.session_state["fabric_authed"] = True
 
-    # Limpa dados temporários
-    st.session_state.pop("_msal_app", None)
+    # Limpa dados temporários de flow (mantém cache!)
+    st.session_state.pop("_msal_app",   None)
+    st.session_state.pop("_msal_cache", None)
     st.session_state.pop("_device_flow", None)
     return True
 
