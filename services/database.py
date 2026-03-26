@@ -15,6 +15,11 @@ Persistência de sessão — abordagem server-side (sem cookies):
 
 Sem dependências extras além do stdlib (shelve, uuid) e das já existentes.
 A dependência extra_streamlit_components pode ser removida do requirements.
+
+Isolamento de cache por sessão:
+  - Todas as funções @st.cache_data recebem _sid como parâmetro oculto.
+  - Passe _sid=sid_atual() nas chamadas para garantir cache separado por
+    usuário e invalidação automática no logout/nova sessão.
 """
 
 import os
@@ -295,6 +300,19 @@ def is_authenticated() -> bool:
     return bool(st.session_state.get("fabric_authed"))
 
 
+def sid_atual() -> str:
+    """
+    Retorna o sid da sessão corrente (string vazia se não autenticado).
+    Usado como argumento _sid nas chamadas de @st.cache_data para garantir
+    que o cache seja separado por usuário/sessão e invalidado no logout.
+
+    Uso no app.py:
+        from services.database import sid_atual
+        df = load_torres_criticidade(empresa, instalacao, _sid=sid_atual())
+    """
+    return st.session_state.get("_session_sid") or _get_sid() or ""
+
+
 # ──────────────────────────────────────────────
 # CONEXÃO COM O FABRIC
 # ──────────────────────────────────────────────
@@ -332,6 +350,7 @@ def _build_connection() -> pyodbc.Connection:
 def load_torres_criticidade(
     empresa: str | None = None,
     instalacao: str | None = None,
+    _sid: str = "",          # cache por sessão — evita dados de usuário cruzado
 ) -> pd.DataFrame:
     where_clauses = ["LATITUDE IS NOT NULL", "LONGITUDE IS NOT NULL"]
     params = []
@@ -357,7 +376,10 @@ def load_torres_criticidade(
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_ocorrencias(cod_ativo: str | None = None) -> pd.DataFrame:
+def load_ocorrencias(
+    cod_ativo: str | None = None,
+    _sid: str = "",          # cache por sessão
+) -> pd.DataFrame:
     if cod_ativo:
         query = """
             SELECT
@@ -384,7 +406,9 @@ def load_ocorrencias(cod_ativo: str | None = None) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def get_filter_options() -> dict:
+def get_filter_options(
+    _sid: str = "",          # cache por sessão
+) -> dict:
     query = """
         SELECT DISTINCT EMPRESA, INSTALACAO
         FROM VIEW_COORD_TORRES
@@ -411,22 +435,34 @@ def get_filter_options() -> dict:
 def load_torres_por_instalacao(
     empresa: str | None = None,
     instalacao: str | None = None,
+    _sid: str = "",          # cache por sessão — evita dados de usuário cruzado
 ) -> pd.DataFrame:
-    where_clauses = ["LATITUDE IS NOT NULL", "LONGITUDE IS NOT NULL"]
-    params = []
+    """
+    Retorna torres filtradas por instalação (obrigatório) e empresa (opcional).
+    Instalação é sempre exigida para evitar listas com centenas de torres.
+    Ordenação numérica real por NUM_TORRE (TRY_CAST para int).
+    """
+    if not instalacao:
+        # Sem instalação definida não carregamos — proteção extra no banco
+        return pd.DataFrame(columns=["COD_ATIVO", "NUM_TORRE", "LATITUDE", "LONGITUDE"])
+
+    where_clauses = [
+        "LATITUDE IS NOT NULL",
+        "LONGITUDE IS NOT NULL",
+        "INSTALACAO = ?",
+    ]
+    params: list = [instalacao]
+
     if empresa:
         where_clauses.append("EMPRESA = ?")
         params.append(empresa)
-    if instalacao:
-        where_clauses.append("INSTALACAO = ?")
-        params.append(instalacao)
 
     where = " AND ".join(where_clauses)
     query = f"""
         SELECT COD_ATIVO, NUM_TORRE, LATITUDE, LONGITUDE
         FROM VW_TORRES_COM_CRITICIDADE
         WHERE {where}
-        ORDER BY NUM_TORRE ASC
+        ORDER BY TRY_CAST(NUM_TORRE AS INT) ASC, NUM_TORRE ASC
     """
     with _build_connection() as conn:
-        return pd.read_sql(query, conn, params=params if params else None)
+        return pd.read_sql(query, conn, params=params)
