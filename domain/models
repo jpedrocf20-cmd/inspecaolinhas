@@ -1,0 +1,88 @@
+"""
+domain/models.py
+Modelos de domínio da aplicação.
+Representam as entidades de negócio independentes de banco ou UI.
+"""
+
+from __future__ import annotations
+from dataclasses import dataclass, field
+from datetime import date
+from enum import IntEnum
+from typing import Optional
+
+
+class Prioridade(IntEnum):
+    MAXIMA  = 1   # STATUS_PRAZO = 'ATRASADA'
+    ALTA    = 2   # DATA_LIMITE próxima (≤ 7 dias)
+    NORMAL  = 3   # Demais OS
+
+
+@dataclass
+class Inspecao:
+    """
+    Entidade central do sistema.
+    Resultado do JOIN entre VIEW_PLANO_CONSOLIDADO_INSPECAO e VW_TORRES_COM_CRITICIDADE,
+    feito exclusivamente via COD_ATIVO.
+    """
+    # — Identificação —
+    cod_os:      str
+    cod_ativo:   str
+
+    # — Localização (vinda de VW_TORRES_COM_CRITICIDADE via COD_ATIVO) —
+    latitude:    Optional[float] = None
+    longitude:   Optional[float] = None
+
+    # — Prazo (vindo de VIEW_PLANO_CONSOLIDADO_INSPECAO) —
+    status_prazo: Optional[str]  = None   # 'ATRASADA' | 'NO PRAZO'
+    data_limite:  Optional[date] = None
+    dias_atraso:  int            = 0
+
+    # — Priorização calculada no domain —
+    prioridade:   Prioridade     = Prioridade.NORMAL
+
+    # — Dados da OS —
+    desc_numero_os:  Optional[str]  = None
+    desc_estado:     Optional[str]  = None
+    cod_plano:       Optional[str]  = None
+    desc_plano:      Optional[str]  = None
+    data_prevista:   Optional[date] = None
+    desc_esquema:    Optional[str]  = None
+    desc_prioridade: Optional[str]  = None
+    nome_empresa:    Optional[str]  = None
+    sigla_empresa:   Optional[str]  = None
+    cod_instalacao:  Optional[str]  = None
+    desc_localizacao: Optional[str] = None
+
+    # — Dados da torre (VW_TORRES_COM_CRITICIDADE) —
+    num_torre:      Optional[str]   = None
+    criticidade:    Optional[int]   = None
+    empresa:        Optional[str]   = None
+    instalacao:     Optional[str]   = None
+
+    # — Rota (preenchido pelo routing) —
+    ordem_visita:   Optional[int]   = None
+    dist_prox_km:   Optional[float] = None
+    dist_acum_km:   Optional[float] = None
+
+    # — Clima (preenchido pelo weather service) —
+    clima:          Optional[dict]  = None
+
+    @property
+    def tem_coordenadas(self) -> bool:
+        return self.latitude is not None and self.longitude is not None
+
+    @property
+    def atrasada(self) -> bool:
+        return self.status_prazo == "ATRASADA"
+
+    @property
+    def dias_para_vencer(self) -> Optional[int]:
+        if self.data_limite is None:
+            return None
+        return (self.data_limite - date.today()).days
+
+    def __repr__(self) -> str:
+        return (
+            f"<Inspecao cod_os={self.cod_os} ativo={self.cod_ativo} "
+            f"prioridade={self.prioridade.name} atraso={self.dias_atraso}d>"
+        )
