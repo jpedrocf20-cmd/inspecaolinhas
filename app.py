@@ -23,63 +23,30 @@ from services.database import (
 )
 from services.weather import get_weather, get_forecast_5d, weather_badge
 from components.mapa  import build_map
-from utils.routing    import otimizar_rota, resumo_rota
+from utils.routing    import (
+    calcular_urgencia, clusterizar, calcular_score_hibrido,
+    selecionar_os, otimizar_rota, resumo_rota,
+)
 
-# ── domain/models e domain/priorizacao inline ──────────────────────────────
-# Os arquivos domain/models e domain/priorizacao não possuem extensão .py
-# no repositório, portanto não são reconhecidos pelo Python como módulos.
-# O conteúdo foi embutido aqui para evitar ModuleNotFoundError.
-
-import numpy as np
-from datetime import date
+# ── Enums de prioridade (usados na UI) ──────────────────────────────────────
 from enum import IntEnum
+import numpy as np
 
 class Prioridade(IntEnum):
-    MAXIMA = 1   # STATUS_PRAZO = 'ATRASADA'
-    ALTA   = 2   # DATA_LIMITE próxima (≤ 7 dias)
-    NORMAL = 3   # Demais OS
+    MAXIMA = 1
+    ALTA   = 2
+    NORMAL = 3
 
-_JANELA_ALTA_PRIORIDADE_DIAS = 7
-
+# priorizar() e selecionar_inspecoes() agora vivem em utils/routing.py
+# como calcular_urgencia()+calcular_score_hibrido() e selecionar_os()
 def priorizar(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    def _prioridade(row) -> int:
-        if str(row.get("STATUS_PRAZO", "")).upper() == "ATRASADA":
-            return int(Prioridade.MAXIMA)
-        try:
-            limite = pd.to_datetime(row.get("DATA_LIMITE"))
-            if pd.notna(limite):
-                dias = (limite.date() - date.today()).days
-                if 0 <= dias <= _JANELA_ALTA_PRIORIDADE_DIAS:
-                    return int(Prioridade.ALTA)
-        except Exception:
-            pass
-        return int(Prioridade.NORMAL)
-
-    df["PRIORIDADE"] = df.apply(_prioridade, axis=1)
-
-    score_prio   = (4 - df["PRIORIDADE"]) * 30
-    dias_atraso  = pd.to_numeric(df.get("DIAS_ATRASO", 0), errors="coerce").fillna(0)
-    score_atraso = dias_atraso.clip(upper=30) * (10 / 30)
-    df["SCORE"]  = (score_prio + score_atraso).clip(0, 100).round(1)
-
-    df = df.sort_values(
-        ["PRIORIDADE", "DIAS_ATRASO", "DATA_LIMITE"],
-        ascending=[True, False, True],
-        na_position="last",
-    ).reset_index(drop=True)
-    return df
-
-def selecionar_inspecoes(df: pd.DataFrame, max_os: int = 20, forcar_atrasadas: bool = True) -> pd.DataFrame:
-    if forcar_atrasadas:
-        atrasadas    = df[df["PRIORIDADE"] == int(Prioridade.MAXIMA)]
-        restantes    = df[df["PRIORIDADE"] != int(Prioridade.MAXIMA)]
-        slots        = max(0, max_os - len(atrasadas))
-        selecionadas = pd.concat([atrasadas, restantes.head(slots)])
-    else:
-        selecionadas = df.head(max_os)
-    return selecionadas.reset_index(drop=True)
+    """Wrapper de compatibilidade — executa pipeline completo de scores."""
+    from utils.routing import calcular_urgencia, clusterizar, calcular_score_hibrido
+    df = calcular_urgencia(df)
+    df = clusterizar(df)
+    df = calcular_score_hibrido(df)
+    return df.sort_values(["PRIORIDADE", "SCORE"], ascending=[True, False],
+                          na_position="last").reset_index(drop=True)
 # ───────────────────────────────────────────────────────────────────────────
 
 # ──────────────────────────────────────────────
@@ -383,6 +350,20 @@ with st.sidebar:
     modo_conservador = st.toggle("🌦️ Destacar risco climático", value=True,
                                   help="Clima NÃO remove OS — apenas destaca visualmente")
 
+    st.markdown("##### 🧠 Otimização inteligente")
+    metodo_cluster = st.radio(
+        "Método de clusterização",
+        ["dbscan", "kmeans"],
+        index=0,
+        horizontal=True,
+        help="DBSCAN: automático por densidade (recomendado). KMeans: k fixo.",
+    )
+    n_clusters_kmeans = 5
+    if metodo_cluster == "kmeans":
+        n_clusters_kmeans = st.slider("Número de clusters (k)", 2, 10, 5)
+    usar_dois_opt = st.toggle("⚡ Melhoria 2-opt na rota", value=True,
+                               help="Reduz ~5-15% a distância total. Levemente mais lento.")
+
     # Ponto de partida
     st.markdown("##### 📍 Ponto de partida (opcional)")
     _emp_key = None if empresa_sel    == "Todas" else empresa_sel
@@ -442,11 +423,16 @@ if gerar:
         st.warning("Nenhuma OS encontrada com os filtros selecionados.")
         st.stop()
 
-    # 1. Priorização (domain)
+    # 1. Pipeline completo: urgência + clusterização + score híbrido
     df_priorizado  = priorizar(df_raw)
+    # Re-clusterizar com o método escolhido pelo usuário (priorizar usa dbscan por padrão)
+    from utils.routing import clusterizar, calcular_score_hibrido
+    df_priorizado = clusterizar(df_priorizado, metodo=metodo_cluster, n_clusters=n_clusters_kmeans)
+    df_priorizado = calcular_score_hibrido(df_priorizado)
+    df_priorizado = df_priorizado.sort_values(["PRIORIDADE", "SCORE"], ascending=[True, False]).reset_index(drop=True)
 
-    # 2. Seleção de OS para a rota
-    df_selecionado = selecionar_inspecoes(df_priorizado, max_os, forcar_atrasadas)
+    # 2. Seleção de OS com modo cluster
+    df_selecionado = selecionar_os(df_priorizado, max_os, forcar_atrasadas)
 
     # 3. Consulta climática das OS candidatas (apoio — não filtra)
     weather_map: dict = {}
@@ -459,7 +445,7 @@ if gerar:
         prog.empty()
 
     # 4. Otimização da rota (routing baseado em OS + coords via COD_ATIVO)
-    df_rota = otimizar_rota(df_selecionado, ponto_partida)
+    df_rota = otimizar_rota(df_selecionado, ponto_partida, usar_dois_opt=usar_dois_opt)
 
     st.session_state.df_consolidado = df_priorizado
     st.session_state.df_rota        = df_rota
@@ -476,12 +462,13 @@ weather_map    = st.session_state.weather_map
 resumo         = st.session_state.resumo
 
 if resumo:
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("📋 OS na rota",      resumo["total_os"])
-    c2.metric("🔴 Atrasadas",        resumo["os_atrasadas"])
-    c3.metric("📏 Distância total",  f"{resumo['distancia_total']} km")
-    c4.metric("⚡ Criticidade mín.", resumo["criticidade_min"])
-    c5.metric("📊 Score médio",      f"{resumo['score_medio']}%")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("📋 OS na rota",       resumo["total_os"])
+    c2.metric("🔴 Atrasadas",         resumo["os_atrasadas"])
+    c3.metric("📏 Distância total",   f"{resumo['distancia_total']} km")
+    c4.metric("📍 Dist. média/salto", f"{resumo.get('distancia_media', '-')} km")
+    c5.metric("🗂️ Clusters",          resumo.get("n_clusters", "-"))
+    c6.metric("📊 Score médio",       f"{resumo['score_medio']}")
     st.divider()
 
 tab_mapa, tab_rota, tab_os, tab_clima = st.tabs([
@@ -535,12 +522,11 @@ with tab_rota:
             except Exception:
                 return str(v)
 
-        df_exibir = df_rota[[
-            "ORDEM_VISITA", "DESC_NUMERO_OS", "COD_ATIVO", "NUM_TORRE",
-            "SIGLA_EMPRESA", "INSTALACAO", "DESC_ESTADO",
-            "STATUS_PRAZO", "DATA_LIMITE", "DIAS_ATRASO",
-            "PRIORIDADE", "SCORE", "DIST_PROX_KM", "DIST_ACUM_KM",
-        ]].copy()
+        _cols_rota = ["ORDEM_VISITA", "DESC_NUMERO_OS", "COD_ATIVO", "NUM_TORRE",
+                       "SIGLA_EMPRESA", "INSTALACAO", "DESC_ESTADO",
+                       "STATUS_PRAZO", "DATA_LIMITE", "DIAS_ATRASO",
+                       "PRIORIDADE", "SCORE", "CLUSTER", "DIST_PROX_KM", "DIST_ACUM_KM"]
+        df_exibir = df_rota[[c for c in _cols_rota if c in df_rota.columns]].copy()
 
         df_exibir["PRIORIDADE"]   = df_exibir["PRIORIDADE"].apply(_label_prioridade)
         df_exibir["DATA_LIMITE"]  = pd.to_datetime(df_exibir["DATA_LIMITE"], errors="coerce").dt.strftime("%d/%m/%Y")
@@ -555,7 +541,8 @@ with tab_rota:
             "DESC_ESTADO":   "Estado",   "STATUS_PRAZO":    "Status",
             "DATA_LIMITE":   "Limite",   "DIAS_ATRASO":     "Atraso (d)",
             "PRIORIDADE":    "Prioridade","SCORE":           "Score",
-            "DIST_PROX_KM":  "Dist→(km)","DIST_ACUM_KM":    "Acum.(km)",
+            "CLUSTER":       "Cluster",  "DIST_PROX_KM":    "Dist→(km)",
+            "DIST_ACUM_KM":  "Acum.(km)",
         }
         df_exibir = df_exibir.rename(columns=rename)
 
