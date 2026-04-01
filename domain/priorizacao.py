@@ -10,8 +10,13 @@ import pandas as pd
 import numpy as np
 from datetime import date
 from typing import List
+from enum import IntEnum
 
-from domain.models import Inspecao, Prioridade
+# Inline de domain/models (domain/models não tem extensão .py no repositório)
+class Prioridade(IntEnum):
+    MAXIMA = 1
+    ALTA   = 2
+    NORMAL = 3
 
 
 # Janela em dias para considerar "prazo próximo" → prioridade ALTA
