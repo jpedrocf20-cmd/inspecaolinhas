@@ -21,11 +21,66 @@ from services.database import (
     load_inspecoes_consolidadas, get_filter_options,
     load_torres_por_instalacao, sid_atual,
 )
-from services.weather   import get_weather, get_forecast_5d, weather_badge
-from components.mapa import build_map
-from domain.priorizacao import priorizar, selecionar_inspecoes
-from utils.routing      import otimizar_rota, resumo_rota
-from domain.models      import Prioridade
+from services.weather import get_weather, get_forecast_5d, weather_badge
+from components.mapa  import build_map
+from utils.routing    import otimizar_rota, resumo_rota
+
+# ── domain/models e domain/priorizacao inline ──────────────────────────────
+# Os arquivos domain/models e domain/priorizacao não possuem extensão .py
+# no repositório, portanto não são reconhecidos pelo Python como módulos.
+# O conteúdo foi embutido aqui para evitar ModuleNotFoundError.
+
+import numpy as np
+from datetime import date
+from enum import IntEnum
+
+class Prioridade(IntEnum):
+    MAXIMA = 1   # STATUS_PRAZO = 'ATRASADA'
+    ALTA   = 2   # DATA_LIMITE próxima (≤ 7 dias)
+    NORMAL = 3   # Demais OS
+
+_JANELA_ALTA_PRIORIDADE_DIAS = 7
+
+def priorizar(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    def _prioridade(row) -> int:
+        if str(row.get("STATUS_PRAZO", "")).upper() == "ATRASADA":
+            return int(Prioridade.MAXIMA)
+        try:
+            limite = pd.to_datetime(row.get("DATA_LIMITE"))
+            if pd.notna(limite):
+                dias = (limite.date() - date.today()).days
+                if 0 <= dias <= _JANELA_ALTA_PRIORIDADE_DIAS:
+                    return int(Prioridade.ALTA)
+        except Exception:
+            pass
+        return int(Prioridade.NORMAL)
+
+    df["PRIORIDADE"] = df.apply(_prioridade, axis=1)
+
+    score_prio   = (4 - df["PRIORIDADE"]) * 30
+    dias_atraso  = pd.to_numeric(df.get("DIAS_ATRASO", 0), errors="coerce").fillna(0)
+    score_atraso = dias_atraso.clip(upper=30) * (10 / 30)
+    df["SCORE"]  = (score_prio + score_atraso).clip(0, 100).round(1)
+
+    df = df.sort_values(
+        ["PRIORIDADE", "DIAS_ATRASO", "DATA_LIMITE"],
+        ascending=[True, False, True],
+        na_position="last",
+    ).reset_index(drop=True)
+    return df
+
+def selecionar_inspecoes(df: pd.DataFrame, max_os: int = 20, forcar_atrasadas: bool = True) -> pd.DataFrame:
+    if forcar_atrasadas:
+        atrasadas    = df[df["PRIORIDADE"] == int(Prioridade.MAXIMA)]
+        restantes    = df[df["PRIORIDADE"] != int(Prioridade.MAXIMA)]
+        slots        = max(0, max_os - len(atrasadas))
+        selecionadas = pd.concat([atrasadas, restantes.head(slots)])
+    else:
+        selecionadas = df.head(max_os)
+    return selecionadas.reset_index(drop=True)
+# ───────────────────────────────────────────────────────────────────────────
 
 # ──────────────────────────────────────────────
 # PAGE CONFIG
