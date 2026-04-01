@@ -83,6 +83,131 @@ def selecionar_inspecoes(df: pd.DataFrame, max_os: int = 20, forcar_atrasadas: b
 # ───────────────────────────────────────────────────────────────────────────
 
 # ──────────────────────────────────────────────
+# HELPERS DE EXPORT EXCEL
+# (definidos aqui para estarem disponíveis em todo o módulo)
+# ──────────────────────────────────────────────
+
+def _estilo_base_excel():
+    thin  = Side(style="thin", color="1E2330")
+    borda = Border(left=thin, right=thin, top=thin, bottom=thin)
+    return borda
+
+
+def _gerar_excel_rota(df: pd.DataFrame, resumo: dict) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Rota de Inspeção"
+
+    borda = _estilo_base_excel()
+
+    ws.merge_cells("A1:N1")
+    tc = ws["A1"]
+    tc.value = f"Rota de Inspeção — {resumo.get('total_os','?')} OS | {resumo.get('distancia_total','?')} km"
+    tc.font  = Font(name="Arial", bold=True, size=14, color="00CFFF")
+    tc.fill  = PatternFill("solid", fgColor="0D1117")
+    tc.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 30
+
+    ws.merge_cells("A2:N2")
+    sc = ws["A2"]
+    sc.value = f"Gerado em: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}"
+    sc.font  = Font(name="Arial", size=9, color="7A8099")
+    sc.fill  = PatternFill("solid", fgColor="0D1117")
+    sc.alignment = Alignment(horizontal="right", vertical="center")
+    ws.row_dimensions[2].height = 16
+
+    headers = list(df.columns)
+    for ci, h in enumerate(headers, 1):
+        cell = ws.cell(row=3, column=ci, value=h)
+        cell.font      = Font(name="Arial", bold=True, size=10, color="00CFFF")
+        cell.fill      = PatternFill("solid", fgColor="1A1F2E")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border    = borda
+    ws.row_dimensions[3].height = 28
+
+    for ri, row_data in enumerate(df.itertuples(index=False), 4):
+        bg = "13161D" if ri % 2 == 0 else "0D0F14"
+        for ci, val in enumerate(row_data, 1):
+            col_name = headers[ci - 1]
+            cell = ws.cell(row=ri, column=ci, value=val)
+            cell.fill      = PatternFill("solid", fgColor=bg)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border    = borda
+
+            fg = "E8EAF0"
+            bold = False
+            if col_name == "Prioridade":
+                if "ATRASADA" in str(val):  fg, bold = "FF6B6B", True
+                elif "VENCE"  in str(val):  fg = "FFD700"
+                else:                       fg = "81C784"
+            elif col_name == "Atraso (d)" and str(val) not in ("0", "–", ""):
+                try:
+                    if int(val) > 0: fg, bold = "FF6B6B", True
+                except Exception: pass
+
+            cell.font = Font(name="Arial", size=10, color=fg, bold=bold)
+        ws.row_dimensions[ri].height = 20
+
+    for ci, h in enumerate(headers, 1):
+        widths = {"Ordem":8,"OS":16,"Ativo":14,"Torre":8,"Empresa":10,"Instalação":18,
+                  "Estado":16,"Status":14,"Limite":12,"Atraso (d)":12,
+                  "Prioridade":18,"Score":10,"Dist→(km)":12,"Acum.(km)":12}
+        ws.column_dimensions[get_column_letter(ci)].width = widths.get(h, 14)
+
+    ws.freeze_panes = "A4"
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _gerar_excel_os(df: pd.DataFrame) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "OS Consolidadas"
+    borda = _estilo_base_excel()
+
+    ws.merge_cells(f"A1:{get_column_letter(len(df.columns))}1")
+    tc = ws["A1"]
+    tc.value = f"OS Consolidadas — Gerado em {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}"
+    tc.font  = Font(name="Arial", bold=True, size=13, color="00CFFF")
+    tc.fill  = PatternFill("solid", fgColor="0D1117")
+    tc.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 28
+
+    headers = list(df.columns)
+    for ci, h in enumerate(headers, 1):
+        cell = ws.cell(row=2, column=ci, value=h)
+        cell.font      = Font(name="Arial", bold=True, size=10, color="00CFFF")
+        cell.fill      = PatternFill("solid", fgColor="1A1F2E")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border    = borda
+    ws.row_dimensions[2].height = 26
+
+    for ri, row_data in enumerate(df.itertuples(index=False), 3):
+        bg = "13161D" if ri % 2 == 0 else "0D0F14"
+        for ci, val in enumerate(row_data, 1):
+            col_name = headers[ci - 1]
+            cell = ws.cell(row=ri, column=ci, value=val)
+            cell.fill      = PatternFill("solid", fgColor=bg)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border    = borda
+            fg   = "E8EAF0"
+            bold = False
+            if col_name == "STATUS_PRAZO" and str(val) == "ATRASADA":
+                fg, bold = "FF6B6B", True
+            cell.font = Font(name="Arial", size=10, color=fg, bold=bold)
+        ws.row_dimensions[ri].height = 18
+
+    for ci in range(1, len(headers) + 1):
+        ws.column_dimensions[get_column_letter(ci)].width = 16
+    ws.freeze_panes = "A3"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+# ──────────────────────────────────────────────
 # PAGE CONFIG
 # ──────────────────────────────────────────────
 st.set_page_config(
@@ -573,127 +698,3 @@ with tab_clima:
             )
     else:
         st.info("Gere a rota para ver a previsão climática.")
-
-
-# ──────────────────────────────────────────────
-# HELPERS DE EXPORT EXCEL
-# ──────────────────────────────────────────────
-
-def _estilo_base_excel():
-    thin   = Side(style="thin", color="1E2330")
-    borda  = Border(left=thin, right=thin, top=thin, bottom=thin)
-    return borda
-
-
-def _gerar_excel_rota(df: pd.DataFrame, resumo: dict) -> bytes:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Rota de Inspeção"
-
-    borda = _estilo_base_excel()
-
-    ws.merge_cells("A1:N1")
-    tc = ws["A1"]
-    tc.value = f"Rota de Inspeção — {resumo.get('total_os','?')} OS | {resumo.get('distancia_total','?')} km"
-    tc.font  = Font(name="Arial", bold=True, size=14, color="00CFFF")
-    tc.fill  = PatternFill("solid", fgColor="0D1117")
-    tc.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 30
-
-    ws.merge_cells("A2:N2")
-    sc = ws["A2"]
-    sc.value = f"Gerado em: {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}"
-    sc.font  = Font(name="Arial", size=9, color="7A8099")
-    sc.fill  = PatternFill("solid", fgColor="0D1117")
-    sc.alignment = Alignment(horizontal="right", vertical="center")
-    ws.row_dimensions[2].height = 16
-
-    headers = list(df.columns)
-    for ci, h in enumerate(headers, 1):
-        cell = ws.cell(row=3, column=ci, value=h)
-        cell.font      = Font(name="Arial", bold=True, size=10, color="00CFFF")
-        cell.fill      = PatternFill("solid", fgColor="1A1F2E")
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        cell.border    = borda
-    ws.row_dimensions[3].height = 28
-
-    for ri, row_data in enumerate(df.itertuples(index=False), 4):
-        bg = "13161D" if ri % 2 == 0 else "0D0F14"
-        for ci, val in enumerate(row_data, 1):
-            col_name = headers[ci - 1]
-            cell = ws.cell(row=ri, column=ci, value=val)
-            cell.fill      = PatternFill("solid", fgColor=bg)
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.border    = borda
-
-            fg = "E8EAF0"
-            bold = False
-            if col_name == "Prioridade":
-                if "ATRASADA" in str(val):   fg, bold = "FF6B6B", True
-                elif "VENCE"  in str(val):   fg = "FFD700"
-                else:                        fg = "81C784"
-            elif col_name == "Atraso (d)" and str(val) not in ("0", "–", ""):
-                try:
-                    if int(val) > 0: fg, bold = "FF6B6B", True
-                except Exception: pass
-
-            cell.font = Font(name="Arial", size=10, color=fg, bold=bold)
-        ws.row_dimensions[ri].height = 20
-
-    for ci, h in enumerate(headers, 1):
-        widths = {"Ordem":8,"OS":16,"Ativo":14,"Torre":8,"Empresa":10,"Instalação":18,
-                  "Estado":16,"Status":14,"Limite":12,"Atraso (d)":12,
-                  "Prioridade":18,"Score":10,"Dist→(km)":12,"Acum.(km)":12}
-        ws.column_dimensions[get_column_letter(ci)].width = widths.get(h, 14)
-
-    ws.freeze_panes = "A4"
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
-
-
-def _gerar_excel_os(df: pd.DataFrame) -> bytes:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "OS Consolidadas"
-    borda = _estilo_base_excel()
-
-    ws.merge_cells(f"A1:{get_column_letter(len(df.columns))}1")
-    tc = ws["A1"]
-    tc.value = f"OS Consolidadas — Gerado em {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}"
-    tc.font  = Font(name="Arial", bold=True, size=13, color="00CFFF")
-    tc.fill  = PatternFill("solid", fgColor="0D1117")
-    tc.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 28
-
-    headers = list(df.columns)
-    for ci, h in enumerate(headers, 1):
-        cell = ws.cell(row=2, column=ci, value=h)
-        cell.font      = Font(name="Arial", bold=True, size=10, color="00CFFF")
-        cell.fill      = PatternFill("solid", fgColor="1A1F2E")
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        cell.border    = borda
-    ws.row_dimensions[2].height = 26
-
-    for ri, row_data in enumerate(df.itertuples(index=False), 3):
-        bg = "13161D" if ri % 2 == 0 else "0D0F14"
-        for ci, val in enumerate(row_data, 1):
-            col_name = headers[ci - 1]
-            cell = ws.cell(row=ri, column=ci, value=val)
-            cell.fill      = PatternFill("solid", fgColor=bg)
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.border    = borda
-            fg   = "E8EAF0"
-            bold = False
-            if col_name == "STATUS_PRAZO" and str(val) == "ATRASADA":
-                fg, bold = "FF6B6B", True
-            cell.font = Font(name="Arial", size=10, color=fg, bold=bold)
-        ws.row_dimensions[ri].height = 18
-
-    for ci in range(1, len(headers) + 1):
-        ws.column_dimensions[get_column_letter(ci)].width = 16
-    ws.freeze_panes = "A3"
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
