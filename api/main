@@ -1,0 +1,128 @@
+"""
+EVOLUÇÃO SUGERIDA — API FastAPI
+================================
+Arquivo: api/main.py
+
+Quando o projeto precisar de escalabilidade (múltiplos usuários,
+integração com outros sistemas, mobile app), migre a data layer
+e domain layer para uma API FastAPI.
+A UI Streamlit consome a API via HTTP — sem acesso direto ao banco.
+
+Instalar: pip install fastapi uvicorn httpx
+
+Rodar:    uvicorn api.main:app --host 0.0.0.0 --port 8000
+"""
+
+from fastapi import FastAPI, Query, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
+import pandas as pd
+
+# Importa as camadas de domínio e dados (reutiliza sem mudança)
+# from data.database import load_inspecoes_consolidadas
+# from domain.priorizacao import priorizar, selecionar_inspecoes
+# from utils.routing import otimizar_rota, resumo_rota
+
+app = FastAPI(
+    title="Inspeção LT API",
+    description="API de roteirização de inspeção de linhas de transmissão",
+    version="2.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ── Modelos Pydantic ──
+
+class InspecaoOut(BaseModel):
+    cod_os:       str
+    cod_ativo:    str
+    latitude:     Optional[float]
+    longitude:    Optional[float]
+    status_prazo: Optional[str]
+    data_limite:  Optional[str]
+    dias_atraso:  int
+    prioridade:   int
+    score:        float
+    empresa:      Optional[str]
+    instalacao:   Optional[str]
+    num_torre:    Optional[str]
+
+
+class RotaOut(BaseModel):
+    total_os:        int
+    os_atrasadas:    int
+    distancia_total: float
+    inspecoes:       list[InspecaoOut]
+
+
+# ── Endpoints ──
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "version": "2.0.0"}
+
+
+@app.get("/inspecoes", response_model=list[InspecaoOut])
+def get_inspecoes(
+    empresa:    Optional[str] = Query(None),
+    instalacao: Optional[str] = Query(None),
+    token:      str           = Query(..., description="Bearer token Microsoft Fabric"),
+):
+    """
+    Retorna OS consolidadas com coordenadas.
+    JOIN obrigatório via COD_ATIVO feito internamente na data layer.
+    """
+    # df = load_inspecoes_consolidadas(empresa, instalacao)
+    # df = priorizar(df)
+    # return df.to_dict("records")
+    return []  # placeholder
+
+
+@app.get("/rota", response_model=RotaOut)
+def get_rota(
+    empresa:         Optional[str] = Query(None),
+    instalacao:      Optional[str] = Query(None),
+    max_os:          int           = Query(20, ge=5, le=100),
+    forcar_atrasadas: bool         = Query(True),
+    token:           str           = Query(...),
+):
+    """
+    Gera a rota otimizada de inspeção.
+    Retorna OS ordenadas por Nearest Neighbor com distâncias.
+    """
+    # df          = load_inspecoes_consolidadas(empresa, instalacao)
+    # df          = priorizar(df)
+    # df          = selecionar_inspecoes(df, max_os, forcar_atrasadas)
+    # df_rota     = otimizar_rota(df)
+    # resumo      = resumo_rota(df_rota)
+    # inspecoes   = [InspecaoOut(**r) for r in df_rota.to_dict("records")]
+    # return RotaOut(**resumo, inspecoes=inspecoes)
+    return RotaOut(total_os=0, os_atrasadas=0, distancia_total=0.0, inspecoes=[])
+
+
+"""
+CONSUMIR A API NO STREAMLIT
+============================
+# services/api_client.py
+
+import httpx
+
+API_BASE = "http://localhost:8000"
+
+def get_rota_via_api(empresa, instalacao, max_os, token):
+    r = httpx.get(
+        f"{API_BASE}/rota",
+        params={"empresa": empresa, "instalacao": instalacao,
+                "max_os": max_os, "token": token},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()
+"""
