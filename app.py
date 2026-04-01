@@ -15,14 +15,14 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from data.database import (
+from services.database import (
     iniciar_device_flow, concluir_login, is_authenticated,
     tentar_login_silencioso, logout,
     load_inspecoes_consolidadas, get_filter_options,
     load_torres_por_instalacao, sid_atual,
 )
 from services.weather   import get_weather, get_forecast_5d, weather_badge
-from ui.components.mapa import build_map
+from components.mapa import build_map
 from domain.priorizacao import priorizar, selecionar_inspecoes
 from utils.routing      import otimizar_rota, resumo_rota
 from domain.models      import Prioridade
