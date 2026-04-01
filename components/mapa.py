@@ -32,6 +32,58 @@ _LABELS_PRIORIDADE = {
     _PRIORIDADE_NORMAL: "🟢 NO PRAZO",
 }
 
+def _torre_svg(cor: str, label: str = "", size: int = 28) -> str:
+    """
+    Retorna HTML com SVG de torre de transmissão colorida por prioridade.
+    label: número de ordem para torres da rota (vazio para torres de fundo).
+    """
+    s = size
+    # proporções relativas ao tamanho
+    cx = s / 2
+    # estrutura da torre em coordenadas relativas ao centro
+    svg = f"""<div style='width:{s}px;height:{s}px;'>
+<svg xmlns='http://www.w3.org/2000/svg' width='{s}' height='{s}' viewBox='0 0 28 32'>
+  <g stroke='{cor}' stroke-width='1.4' fill='none' stroke-linecap='round' stroke-linejoin='round'>
+    <!-- pés -->
+    <line x1='4' y1='30' x2='9' y2='22'/>
+    <line x1='24' y1='30' x2='19' y2='22'/>
+    <line x1='4' y1='30' x2='24' y2='30'/>
+    <!-- base -->
+    <line x1='9' y1='22' x2='19' y2='22'/>
+    <!-- corpo com X -->
+    <line x1='9' y1='22' x2='11' y2='14'/>
+    <line x1='19' y1='22' x2='17' y2='14'/>
+    <line x1='9' y1='22' x2='17' y2='14'/>
+    <line x1='19' y1='22' x2='11' y2='14'/>
+    <!-- cintura -->
+    <line x1='11' y1='14' x2='17' y2='14'/>
+    <!-- topo com X -->
+    <line x1='11' y1='14' x2='12.5' y2='8'/>
+    <line x1='17' y1='14' x2='15.5' y2='8'/>
+    <line x1='11' y1='14' x2='15.5' y2='8'/>
+    <line x1='17' y1='14' x2='12.5' y2='8'/>
+    <line x1='12.5' y1='8' x2='15.5' y2='8'/>
+    <!-- mastro -->
+    <line x1='14' y1='8' x2='14' y2='2'/>
+    <!-- braços -->
+    <line x1='4' y1='10' x2='24' y2='10'/>
+    <line x1='7' y1='13' x2='21' y2='13'/>
+    <!-- isoladores -->
+    <circle cx='4' cy='10' r='1.2' fill='{cor}'/>
+    <circle cx='24' cy='10' r='1.2' fill='{cor}'/>
+    <circle cx='7' cy='13' r='1.2' fill='{cor}'/>
+    <circle cx='21' cy='13' r='1.2' fill='{cor}'/>
+    <circle cx='14' cy='2' r='1.2' fill='{cor}'/>
+    <!-- fios -->
+    <path d='M4 10 Q14 13 24 10' stroke='{cor}' stroke-width='0.7'/>
+    <path d='M7 13 Q14 16 21 13' stroke='{cor}' stroke-width='0.7'/>
+  </g>
+  {"" if not label else f"<circle cx='14' cy='16' r='6' fill='{cor}' opacity='0.9'/><text x='14' y='20' font-size='6' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'>{label}</text>"}
+</svg></div>"""
+    return svg
+
+
+
 
 def _cor(row: pd.Series) -> str:
     try:
@@ -129,15 +181,12 @@ def build_map(
         cor   = _cor(row)
         clima = (weather_map or {}).get(row["COD_ATIVO"])
 
-        icon_html = f"""
-        <div style='background:{cor};border:2px solid white;border-radius:50%;
-                    width:12px;height:12px;box-shadow:0 0 4px rgba(0,0,0,0.6);'></div>
-        """
+        icon_html = _torre_svg(cor, label="", size=28)
         folium.Marker(
             location=[row["LATITUDE"], row["LONGITUDE"]],
             popup=folium.Popup(_popup_html(row, clima), max_width=300),
             tooltip=f"OS {_safe(row.get('DESC_NUMERO_OS'))} — {_safe(row.get('COD_ATIVO'))}",
-            icon=folium.DivIcon(html=icon_html, icon_size=(12, 12), icon_anchor=(6, 6)),
+            icon=folium.DivIcon(html=icon_html, icon_size=(28, 32), icon_anchor=(14, 30)),
         ).add_to(container if usar_cluster else layer_todas)
 
     if usar_cluster:
@@ -160,17 +209,12 @@ def build_map(
                 cor    = _cor(row)
                 clima  = (weather_map or {}).get(row["COD_ATIVO"])
 
-                icon_html = f"""
-                <div style='background:{cor};border:2.5px solid white;border-radius:50%;
-                            width:22px;height:22px;display:flex;align-items:center;
-                            justify-content:center;font-size:10px;font-weight:bold;
-                            color:white;box-shadow:0 0 6px rgba(0,0,0,0.7);'>{ordem}</div>
-                """
+                icon_html = _torre_svg(cor, label=str(ordem), size=36)
                 folium.Marker(
                     location=[row["LATITUDE"], row["LONGITUDE"]],
                     popup=folium.Popup(_popup_html(row, clima), max_width=300),
                     tooltip=f"#{ordem} — {_safe(row.get('DESC_NUMERO_OS'))}",
-                    icon=folium.DivIcon(html=icon_html, icon_size=(22, 22), icon_anchor=(11, 11)),
+                    icon=folium.DivIcon(html=icon_html, icon_size=(36, 40), icon_anchor=(18, 38)),
                 ).add_to(layer_rota)
 
             layer_rota.add_to(mapa)
