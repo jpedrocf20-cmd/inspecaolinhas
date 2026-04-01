@@ -13,26 +13,29 @@ from __future__ import annotations
 import folium
 import pandas as pd
 from folium.plugins import MarkerCluster
-from domain.models import Prioridade
 
+# Valores de Prioridade (espelha domain/models.py — MAXIMA=1, ALTA=2, NORMAL=3)
+_PRIORIDADE_MAXIMA = 1
+_PRIORIDADE_ALTA   = 2
+_PRIORIDADE_NORMAL = 3
 
 # Paleta por PRIORIDADE (valor int)
 _CORES_PRIORIDADE = {
-    int(Prioridade.MAXIMA): "#FF2D2D",   # 🔴 Atrasada
-    int(Prioridade.ALTA):   "#FFD700",   # 🟡 Alta (vence em breve)
-    int(Prioridade.NORMAL): "#4CAF50",   # 🟢 Normal
+    _PRIORIDADE_MAXIMA: "#FF2D2D",   # 🔴 Atrasada
+    _PRIORIDADE_ALTA:   "#FFD700",   # 🟡 Alta (vence em breve)
+    _PRIORIDADE_NORMAL: "#4CAF50",   # 🟢 Normal
 }
 
 _LABELS_PRIORIDADE = {
-    int(Prioridade.MAXIMA): "🔴 ATRASADA",
-    int(Prioridade.ALTA):   "🟡 VENCE EM BREVE",
-    int(Prioridade.NORMAL): "🟢 NO PRAZO",
+    _PRIORIDADE_MAXIMA: "🔴 ATRASADA",
+    _PRIORIDADE_ALTA:   "🟡 VENCE EM BREVE",
+    _PRIORIDADE_NORMAL: "🟢 NO PRAZO",
 }
 
 
 def _cor(row: pd.Series) -> str:
     try:
-        p = int(row.get("PRIORIDADE", int(Prioridade.NORMAL)))
+        p = int(row.get("PRIORIDADE", _PRIORIDADE_NORMAL))
         return _CORES_PRIORIDADE.get(p, "#999999")
     except Exception:
         return "#999999"
