@@ -1,0 +1,104 @@
+"""
+domain/priorizacao.py
+Regras de negócio de priorização de inspeção.
+Totalmente desacoplado de banco, UI e clima.
+"""
+
+from __future__ import annotations
+
+import pandas as pd
+import numpy as np
+from datetime import date
+from typing import List
+
+from domain.models import Inspecao, Prioridade
+
+
+# Janela em dias para considerar "prazo próximo" → prioridade ALTA
+_JANELA_ALTA_PRIORIDADE_DIAS = 7
+
+
+def calcular_prioridade(inspecao: Inspecao) -> Prioridade:
+    """
+    Regra central de priorização:
+      1. ATRASADA       → Prioridade.MAXIMA
+      2. Vence em ≤ 7d  → Prioridade.ALTA
+      3. Demais         → Prioridade.NORMAL
+    """
+    if inspecao.atrasada:
+        return Prioridade.MAXIMA
+
+    dias = inspecao.dias_para_vencer
+    if dias is not None and 0 <= dias <= _JANELA_ALTA_PRIORIDADE_DIAS:
+        return Prioridade.ALTA
+
+    return Prioridade.NORMAL
+
+
+def priorizar(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Recebe o DataFrame consolidado (resultado do JOIN via COD_ATIVO) e
+    adiciona/atualiza as colunas de priorização:
+      - PRIORIDADE     : int (1 / 2 / 3)
+      - SCORE          : float 0–100 (urgência composta)
+
+    Ordenação final:
+      PRIORIDADE ASC → DIAS_ATRASO DESC → DATA_LIMITE ASC
+    """
+    df = df.copy()
+
+    # ── Prioridade categórica ──
+    def _prioridade(row) -> int:
+        if str(row.get("STATUS_PRAZO", "")).upper() == "ATRASADA":
+            return int(Prioridade.MAXIMA)
+        try:
+            limite = pd.to_datetime(row.get("DATA_LIMITE"))
+            if pd.notna(limite):
+                dias = (limite.date() - date.today()).days
+                if 0 <= dias <= _JANELA_ALTA_PRIORIDADE_DIAS:
+                    return int(Prioridade.ALTA)
+        except Exception:
+            pass
+        return int(Prioridade.NORMAL)
+
+    df["PRIORIDADE"] = df.apply(_prioridade, axis=1)
+
+    # ── Score composto 0–100 ──
+    #   Componentes:
+    #     Prioridade  : (4 - prioridade) * 30        → máx 90
+    #     Dias atraso : min(dias_atraso, 30) * 0.33  → máx ~10
+    #   Total bruto máx ≈ 100
+    score_prio   = (4 - df["PRIORIDADE"]) * 30
+    dias_atraso  = pd.to_numeric(df.get("DIAS_ATRASO", 0), errors="coerce").fillna(0)
+    score_atraso = dias_atraso.clip(upper=30) * (10 / 30)
+    df["SCORE"]  = (score_prio + score_atraso).clip(0, 100).round(1)
+
+    # ── Ordenação ──
+    df = df.sort_values(
+        ["PRIORIDADE", "DIAS_ATRASO", "DATA_LIMITE"],
+        ascending=[True, False, True],
+        na_position="last",
+    ).reset_index(drop=True)
+
+    return df
+
+
+def selecionar_inspecoes(
+    df: pd.DataFrame,
+    max_os: int = 20,
+    forcar_atrasadas: bool = True,
+) -> pd.DataFrame:
+    """
+    Seleciona as OS para compor a rota.
+    Garante que todas as ATRASADAS entrem (até max_os),
+    completando com ALTA e NORMAL.
+    """
+    if forcar_atrasadas:
+        atrasadas  = df[df["PRIORIDADE"] == int(Prioridade.MAXIMA)]
+        restantes  = df[df["PRIORIDADE"] != int(Prioridade.MAXIMA)]
+        slots      = max(0, max_os - len(atrasadas))
+        selecionadas = pd.concat([atrasadas, restantes.head(slots)])
+    else:
+        selecionadas = df.head(max_os)
+
+    return selecionadas.reset_index(drop=True)
