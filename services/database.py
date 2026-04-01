@@ -1,26 +1,17 @@
 """
-services/database.py
-Conexão com Microsoft Fabric usando Device Code Flow (suporta MFA obrigatório).
-O usuário autentica pelo navegador — o app nunca toca na senha.
+data/database.py
+Camada de dados — conexão com Microsoft Fabric e queries SQL.
 
-Persistência de sessão — abordagem server-side (sem cookies):
-  - Após autenticar, o cache MSAL é salvo em disco (shelve) no servidor,
-    indexado por um token de sessão UUID gerado no login.
-  - O token de sessão é mantido na URL via st.query_params (?sid=...).
-  - No F5 ou reabertura da aba, o sid ainda está na URL e o cache MSAL
-    é recuperado do disco automaticamente — sem precisar de cookies.
-  - Funciona mesmo com bloqueadores de cookies corporativos.
-  - Cada usuário tem seu próprio sid; múltiplos usuários simultâneos OK.
-  - Sessões expiram após 48h (renovadas a cada uso).
-
-Sem dependências extras além do stdlib (shelve, uuid) e das já existentes.
-A dependência extra_streamlit_components pode ser removida do requirements.
-
-Isolamento de cache por sessão:
-  - Todas as funções @st.cache_data recebem _sid como parâmetro oculto.
-  - Passe _sid=sid_atual() nas chamadas para garantir cache separado por
-    usuário e invalidação automática no logout/nova sessão.
+Responsabilidades:
+  - Autenticação via Device Code Flow (MFA-compatible)
+  - Persistência de sessão via shelve server-side + sid na URL
+  - Consulta das duas views principais
+  - JOIN obrigatório via COD_ATIVO entre:
+      VIEW_PLANO_CONSOLIDADO_INSPECAO  ←→  VW_TORRES_COM_CRITICIDADE
+  - Retorno de DataFrames limpos e tipados
 """
+
+from __future__ import annotations
 
 import os
 import shelve
@@ -33,7 +24,7 @@ import streamlit as st
 from msal import PublicClientApplication, SerializableTokenCache
 
 # ──────────────────────────────────────────────
-# CONFIGURAÇÃO DO FABRIC
+# CONFIG FABRIC
 # ──────────────────────────────────────────────
 FABRIC_SERVER   = "q2amn6c4xhfuthjy5u3zicv66u-cmbcabgdz5jehnyem4j735ihxm.datawarehouse.fabric.microsoft.com"
 FABRIC_DATABASE = "SGM"
@@ -43,34 +34,24 @@ _PUBLIC_CLIENT_ID = "1950a258-227b-4e31-a9cf-717495945fc2"
 _SCOPE            = ["https://database.windows.net/user_impersonation"]
 _ODBC_DRIVER      = "ODBC Driver 17 for SQL Server"
 
-# Arquivo shelve salvo na raiz do projeto (um nível acima de /services)
 _SHELVE_PATH = os.path.join(os.path.dirname(__file__), "..", ".session_cache")
-_SESSION_TTL = 48 * 3600   # 48 horas em segundos
-_SID_PARAM   = "sid"       # nome do query param na URL
+_SESSION_TTL = 48 * 3600
+_SID_PARAM   = "sid"
 
 
 # ──────────────────────────────────────────────
-# PERSISTÊNCIA SERVER-SIDE (shelve em disco)
+# PERSISTÊNCIA SERVER-SIDE (shelve)
 # ──────────────────────────────────────────────
 
 def _shelve_save(sid: str, token_cache_str: str, username: str) -> None:
-    """Salva o cache MSAL no disco associado ao sid."""
     try:
         with shelve.open(_SHELVE_PATH) as db:
-            db[sid] = {
-                "cache":    token_cache_str,
-                "username": username,
-                "ts":       time.time(),
-            }
+            db[sid] = {"cache": token_cache_str, "username": username, "ts": time.time()}
     except Exception:
         pass
 
 
 def _shelve_load(sid: str) -> dict | None:
-    """
-    Carrega o cache do disco pelo sid.
-    Retorna None se não existir ou se tiver expirado (> 48h).
-    """
     try:
         with shelve.open(_SHELVE_PATH) as db:
             entry = db.get(sid)
@@ -85,7 +66,6 @@ def _shelve_load(sid: str) -> dict | None:
 
 
 def _shelve_delete(sid: str) -> None:
-    """Remove a entrada do disco (logout ou expiração)."""
     try:
         with shelve.open(_SHELVE_PATH) as db:
             if sid in db:
@@ -95,7 +75,6 @@ def _shelve_delete(sid: str) -> None:
 
 
 def _shelve_touch(sid: str) -> None:
-    """Renova o timestamp para prorrogar o TTL a cada uso."""
     try:
         with shelve.open(_SHELVE_PATH) as db:
             entry = db.get(sid)
@@ -107,16 +86,14 @@ def _shelve_touch(sid: str) -> None:
 
 
 # ──────────────────────────────────────────────
-# SID NA URL (query params)
+# SID NA URL
 # ──────────────────────────────────────────────
 
 def _get_sid() -> str | None:
     return st.query_params.get(_SID_PARAM)
 
-
 def _set_sid(sid: str) -> None:
     st.query_params[_SID_PARAM] = sid
-
 
 def _clear_sid() -> None:
     if _SID_PARAM in st.query_params:
@@ -128,19 +105,11 @@ def _clear_sid() -> None:
 # ──────────────────────────────────────────────
 
 def _get_token_cache() -> SerializableTokenCache:
-    """
-    Obtém o cache MSAL.
-    Prioridade: session_state (rápido, sem I/O) → shelve via sid na URL → vazio.
-    """
     cache = SerializableTokenCache()
-
-    # 1. Session state — caminho rápido
     cached_state = st.session_state.get("_msal_token_cache")
     if cached_state:
         cache.deserialize(cached_state)
         return cache
-
-    # 2. Shelve via sid da URL
     sid = _get_sid()
     if sid:
         entry = _shelve_load(sid)
@@ -151,35 +120,25 @@ def _get_token_cache() -> SerializableTokenCache:
                 st.session_state["_session_sid"]      = sid
             except Exception:
                 pass
-
     return cache
 
 
 def _save_token_cache(cache: SerializableTokenCache, username: str = "Usuário") -> None:
-    """
-    Persiste o cache no session_state + shelve em disco.
-    Cria um sid novo se necessário e o escreve na URL.
-    """
-    # Mesmo sem mudança, renova o TTL
     sid = st.session_state.get("_session_sid") or _get_sid()
     if not cache.has_state_changed:
         if sid:
             _shelve_touch(sid)
         return
-
     serialized = cache.serialize()
     st.session_state["_msal_token_cache"] = serialized
-
     if not sid:
         sid = str(uuid.uuid4())
         st.session_state["_session_sid"] = sid
-
     _shelve_save(sid, serialized, username)
     _set_sid(sid)
 
 
 def _delete_token_cache() -> None:
-    """Remove cache da session e do disco (logout)."""
     sid = st.session_state.get("_session_sid") or _get_sid()
     if sid:
         _shelve_delete(sid)
@@ -197,34 +156,19 @@ def _build_msal_app(cache: SerializableTokenCache | None = None) -> PublicClient
 
 
 # ──────────────────────────────────────────────
-# RENOVAÇÃO SILENCIOSA DE TOKEN
+# AUTH — Device Code Flow
 # ──────────────────────────────────────────────
 
 def tentar_login_silencioso() -> bool:
-    """
-    Tenta renovar o access token a partir do cache em disco (via sid na URL).
-    Chamado automaticamente no início de cada página.
-
-    Após F5 ou reabertura da aba:
-      - O sid continua na URL.
-      - O cache MSAL é recuperado do shelve.
-      - O access token é renovado silenciosamente via refresh token.
-      - Se o refresh token ainda for válido (até ~90 dias pela Microsoft),
-        o usuário entra sem nenhuma interação.
-    """
     sid = _get_sid()
     if not sid:
         return False
-
-    cache = _get_token_cache()
-    app   = _build_msal_app(cache)
-
+    cache   = _get_token_cache()
+    app     = _build_msal_app(cache)
     accounts = app.get_accounts()
     if not accounts:
         return False
-
     result = app.acquire_token_silent(scopes=_SCOPE, account=accounts[0])
-
     if result and "access_token" in result:
         username = (
             result.get("id_token_claims", {}).get("preferred_username")
@@ -235,25 +179,17 @@ def tentar_login_silencioso() -> bool:
         st.session_state["fabric_user"]   = username
         st.session_state["fabric_authed"] = True
         return True
-
     return False
 
-
-# ──────────────────────────────────────────────
-# AUTENTICAÇÃO — Device Code Flow (suporta MFA)
-# ──────────────────────────────────────────────
 
 def iniciar_device_flow() -> dict:
     cache = _get_token_cache()
     app   = _build_msal_app(cache)
     st.session_state["_msal_app"]   = app
     st.session_state["_msal_cache"] = cache
-
     flow = app.initiate_device_flow(scopes=_SCOPE)
     if "user_code" not in flow:
-        erro = flow.get("error_description") or flow.get("error") or str(flow)
-        raise RuntimeError(f"Não foi possível iniciar o login: {erro}")
-
+        raise RuntimeError(f"Não foi possível iniciar o login: {flow.get('error_description', flow)}")
     st.session_state["_device_flow"] = flow
     return flow
 
@@ -262,36 +198,26 @@ def concluir_login() -> bool:
     app   = st.session_state.get("_msal_app")
     flow  = st.session_state.get("_device_flow")
     cache = st.session_state.get("_msal_cache")
-
     if not app or not flow:
         raise RuntimeError("Sessão expirada. Clique em 'Iniciar Login' novamente.")
-
     result = app.acquire_token_by_device_flow(flow, exit_condition=lambda f: True)
-
     if "access_token" not in result:
-        erro = result.get("error_description") or result.get("error") or str(result)
-        raise RuntimeError(f"Autenticação não concluída: {erro}")
-
+        raise RuntimeError(f"Autenticação não concluída: {result.get('error_description', result)}")
     username = result.get("id_token_claims", {}).get("preferred_username", "Usuário")
-
     if cache:
         _save_token_cache(cache, username)
-
     st.session_state["fabric_token"]  = result["access_token"]
     st.session_state["fabric_user"]   = username
     st.session_state["fabric_authed"] = True
-
-    st.session_state.pop("_msal_app",    None)
-    st.session_state.pop("_msal_cache",  None)
-    st.session_state.pop("_device_flow", None)
+    for k in ["_msal_app", "_msal_cache", "_device_flow"]:
+        st.session_state.pop(k, None)
     return True
 
 
 def logout() -> None:
-    """Desloga, remove sessão do disco e limpa o sid da URL."""
     _delete_token_cache()
     for k in ["fabric_authed", "fabric_token", "fabric_user",
-              "df_rota", "df_base", "weather_map", "resumo",
+              "df_consolidado", "df_rota", "weather_map", "resumo",
               "_device_flow", "_msal_app"]:
         st.session_state[k] = None if k != "fabric_authed" else False
 
@@ -301,20 +227,11 @@ def is_authenticated() -> bool:
 
 
 def sid_atual() -> str:
-    """
-    Retorna o sid da sessão corrente (string vazia se não autenticado).
-    Usado como argumento _sid nas chamadas de @st.cache_data para garantir
-    que o cache seja separado por usuário/sessão e invalidado no logout.
-
-    Uso no app.py:
-        from services.database import sid_atual
-        df = load_torres_criticidade(empresa, instalacao, _sid=sid_atual())
-    """
     return st.session_state.get("_session_sid") or _get_sid() or ""
 
 
 # ──────────────────────────────────────────────
-# CONEXÃO COM O FABRIC
+# CONEXÃO
 # ──────────────────────────────────────────────
 
 def _token_para_bytes(token: str) -> bytes:
@@ -326,94 +243,129 @@ def _build_connection() -> pyodbc.Connection:
     token = st.session_state.get("fabric_token")
     if not token:
         raise RuntimeError("Não autenticado. Faça login na sidebar.")
-
     conn_str = (
         f"DRIVER={{{_ODBC_DRIVER}}};"
         f"SERVER={FABRIC_SERVER},{FABRIC_PORT};"
         f"DATABASE={FABRIC_DATABASE};"
-        "Encrypt=yes;"
-        "TrustServerCertificate=no;"
-        "Connection Timeout=30;"
+        "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
     )
     SQL_COPT_SS_ACCESS_TOKEN = 1256
-    return pyodbc.connect(
-        conn_str,
-        attrs_before={SQL_COPT_SS_ACCESS_TOKEN: _token_para_bytes(token)},
-    )
+    return pyodbc.connect(conn_str, attrs_before={SQL_COPT_SS_ACCESS_TOKEN: _token_para_bytes(token)})
 
 
 # ──────────────────────────────────────────────
-# QUERIES
+# QUERIES PRINCIPAIS
 # ──────────────────────────────────────────────
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_torres_criticidade(
-    empresa: str | None = None,
+def load_inspecoes_consolidadas(
+    empresa:    str | None = None,
     instalacao: str | None = None,
-    _sid: str = "",          # cache por sessão — evita dados de usuário cruzado
+    _sid: str = "",
 ) -> pd.DataFrame:
-    where_clauses = ["LATITUDE IS NOT NULL", "LONGITUDE IS NOT NULL"]
-    params = []
+    """
+    🔑 QUERY PRINCIPAL DO SISTEMA.
+
+    Faz o JOIN obrigatório entre:
+      VIEW_PLANO_CONSOLIDADO_INSPECAO  (dados da OS e prazo)
+      VW_TORRES_COM_CRITICIDADE        (LATITUDE, LONGITUDE, torre)
+
+    A ligação é EXCLUSIVAMENTE via COD_ATIVO.
+    NÃO usa COD_OS como chave de ligação entre as views.
+
+    Filtra apenas registros com coordenadas válidas.
+    """
+    where_clauses = [
+        "T.LATITUDE  IS NOT NULL",
+        "T.LONGITUDE IS NOT NULL",
+    ]
+    params: list = []
+
     if empresa:
-        where_clauses.append("EMPRESA = ?")
+        where_clauses.append("T.EMPRESA = ?")
         params.append(empresa)
     if instalacao:
-        where_clauses.append("INSTALACAO = ?")
+        where_clauses.append("T.INSTALACAO = ?")
         params.append(instalacao)
 
     where = " AND ".join(where_clauses)
+
     query = f"""
         SELECT
-            COD_ATIVO, EMPRESA, INSTALACAO, NUM_TORRE,
-            LATITUDE, LONGITUDE, CRITICIDADE_MIN,
-            QTD_SS, MAX_DIAS_ABERTO, PIOR_SALDO_DIAS, FL_ATRASADO
-        FROM VW_TORRES_COM_CRITICIDADE
-        WHERE {where}
-        ORDER BY CRITICIDADE_MIN ASC, FL_ATRASADO DESC
+            -- Identificação
+            P.COD_OS,
+            P.COD_ATIVO,
+
+            -- Prazo e status (VIEW_PLANO_CONSOLIDADO_INSPECAO)
+            P.STATUS_PRAZO,
+            P.DATA_LIMITE,
+            P.DIAS_ATRASO,
+            P.DATA_PREVISTA,
+            P.DESC_PRIORIDADE,
+            P.DESC_NUMERO_OS,
+            P.DESC_ESTADO,
+            P.COD_PLANO,
+            P.DESC_PLANO,
+            P.DESC_ESQUEMA,
+            P.NOME_EMPRESA,
+            P.SIGLA_EMPRESA,
+            P.COD_INSTALACAO,
+            P.DESC_LOCALIZACAO,
+            P.DATA_EXTRACAO,
+
+            -- Localização e torre (VW_TORRES_COM_CRITICIDADE via COD_ATIVO)
+            T.LATITUDE,
+            T.LONGITUDE,
+            T.NUM_TORRE,
+            T.CRITICIDADE_MIN   AS CRITICIDADE,
+            T.EMPRESA,
+            T.INSTALACAO
+
+        FROM
+            VIEW_PLANO_CONSOLIDADO_INSPECAO P
+            INNER JOIN VW_TORRES_COM_CRITICIDADE T
+                ON P.COD_ATIVO = T.COD_ATIVO   -- JOIN EXCLUSIVO via COD_ATIVO
+
+        WHERE
+            {where}
+
+        ORDER BY
+            P.STATUS_PRAZO DESC,   -- ATRASADA primeiro
+            P.DIAS_ATRASO  DESC,
+            P.DATA_LIMITE  ASC
     """
+
     with _build_connection() as conn:
-        return pd.read_sql(query, conn, params=params if params else None)
+        df = pd.read_sql(query, conn, params=params if params else None)
 
+    # Garantias de tipo
+    for col in ["LATITUDE", "LONGITUDE"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in ["DIAS_ATRASO"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+    for col in ["DATA_LIMITE", "DATA_PREVISTA"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
 
-@st.cache_data(ttl=300, show_spinner=False)
-def load_ocorrencias(
-    cod_ativo: str | None = None,
-    _sid: str = "",          # cache por sessão
-) -> pd.DataFrame:
-    if cod_ativo:
-        query = """
-            SELECT
-                COD_SS, COD_ATIVO, NOME_PRIORIDADE, NIVEL_CRITICIDADE,
-                DIAS_EM_ABERTO, PRAZO_DIAS, SALDO_DIAS, STATUS_PRAZO,
-                TEXT_OBSERVACAO
-            FROM VW_SS_TRATADA
-            WHERE COD_ATIVO = ?
-            ORDER BY NIVEL_CRITICIDADE ASC, SALDO_DIAS ASC
-        """
-        with _build_connection() as conn:
-            return pd.read_sql(query, conn, params=[cod_ativo])
-    else:
-        query = """
-            SELECT
-                COD_SS, COD_ATIVO, NOME_PRIORIDADE, NIVEL_CRITICIDADE,
-                DIAS_EM_ABERTO, PRAZO_DIAS, SALDO_DIAS, STATUS_PRAZO,
-                TEXT_OBSERVACAO
-            FROM VW_SS_TRATADA
-            ORDER BY NIVEL_CRITICIDADE ASC, SALDO_DIAS ASC
-        """
-        with _build_connection() as conn:
-            return pd.read_sql(query, conn)
+    # Remove linhas sem coordenada (segurança extra)
+    df = df.dropna(subset=["LATITUDE", "LONGITUDE"]).reset_index(drop=True)
+
+    return df
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def get_filter_options(
-    _sid: str = "",          # cache por sessão
-) -> dict:
+def get_filter_options(_sid: str = "") -> dict:
+    """
+    Retorna opções de filtro de empresa e instalação
+    baseadas nas torres que têm dados em ambas as views.
+    """
     query = """
-        SELECT DISTINCT EMPRESA, INSTALACAO
-        FROM VIEW_COORD_TORRES
-        WHERE EMPRESA IS NOT NULL AND INSTALACAO IS NOT NULL
-        ORDER BY EMPRESA, INSTALACAO
+        SELECT DISTINCT T.EMPRESA, T.INSTALACAO
+        FROM VW_TORRES_COM_CRITICIDADE T
+        INNER JOIN VIEW_PLANO_CONSOLIDADO_INSPECAO P ON P.COD_ATIVO = T.COD_ATIVO
+        WHERE T.EMPRESA IS NOT NULL AND T.INSTALACAO IS NOT NULL
+            AND T.LATITUDE IS NOT NULL AND T.LONGITUDE IS NOT NULL
+        ORDER BY T.EMPRESA, T.INSTALACAO
     """
     with _build_connection() as conn:
         df = pd.read_sql(query, conn)
@@ -424,26 +376,17 @@ def get_filter_options(
         emp: sorted(df.loc[df["EMPRESA"] == emp, "INSTALACAO"].unique().tolist())
         for emp in empresas
     }
-
-    return {
-        "empresas": empresas,
-        "instalacoes_por_empresa": instalacoes_por_empresa,
-    }
+    return {"empresas": empresas, "instalacoes_por_empresa": instalacoes_por_empresa}
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_torres_por_instalacao(
-    empresa: str | None = None,
+    empresa:    str | None = None,
     instalacao: str | None = None,
-    _sid: str = "",          # cache por sessão — evita dados de usuário cruzado
+    _sid: str = "",
 ) -> pd.DataFrame:
-    """
-    Retorna torres filtradas por instalação (obrigatório) e empresa (opcional).
-    Instalação é sempre exigida para evitar listas com centenas de torres.
-    Ordenação numérica real por NUM_TORRE (TRY_CAST para int).
-    """
+    """Torres disponíveis para seleção de ponto de partida."""
     if not instalacao:
-        # Sem instalação definida não carregamos — proteção extra no banco
         return pd.DataFrame(columns=["COD_ATIVO", "NUM_TORRE", "LATITUDE", "LONGITUDE"])
 
     where_clauses = [
@@ -452,7 +395,6 @@ def load_torres_por_instalacao(
         "INSTALACAO = ?",
     ]
     params: list = [instalacao]
-
     if empresa:
         where_clauses.append("EMPRESA = ?")
         params.append(empresa)
