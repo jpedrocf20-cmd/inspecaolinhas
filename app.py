@@ -582,7 +582,44 @@ with tab_rota:
 # ── TAB OS DETALHADAS ──
 with tab_os:
     if df_consolidado is not None and not df_consolidado.empty:
-        st.markdown(f"#### {len(df_consolidado)} OS consolidadas (todas, ordenadas por prioridade)")
+        col_titulo, col_ajuda = st.columns([5, 1])
+        with col_titulo:
+            st.markdown(f"#### {len(df_consolidado)} OS consolidadas (todas, ordenadas por prioridade)")
+        with col_ajuda:
+            with st.popover("ℹ️ Como funciona?", use_container_width=True):
+                st.markdown("""
+### 🏷️ Prioridade
+
+A prioridade é calculada automaticamente com base no prazo de cada OS:
+
+| Valor | Nível | Critério |
+|-------|-------|----------|
+| **1** | 🔴 **ATRASADA** | `STATUS_PRAZO = 'ATRASADA'` — prazo já vencido |
+| **2** | 🟡 **ALTA** | `DATA_LIMITE` vence em **≤ 7 dias** |
+| **3** | 🟢 **NORMAL** | Demais OS dentro do prazo |
+
+---
+
+### 📊 Score (0 – 100)
+
+O Score é um índice composto de urgência, calculado assim:
+
+```
+Score = (4 − Prioridade) × 30  +  min(Dias de Atraso, 30) × 0,33
+```
+
+| Componente | Peso | Máximo |
+|---|---|---|
+| Prioridade | `(4 − P) × 30` | 90 pts |
+| Dias de atraso | `dias × 0,33` | ~10 pts |
+| **Total** | | **100 pts** |
+
+> **Exemplo:** OS atrasada há 15 dias → Score = (4−1)×30 + 15×0,33 = **90 + 5 = 95**
+
+---
+
+> 💡 A ordenação da tabela segue: **Prioridade ↑ → Dias de Atraso ↓ → Data Limite ↑**
+""")
 
         col_filtro, col_vazio = st.columns([1, 3])
         with col_filtro:
