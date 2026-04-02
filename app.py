@@ -117,7 +117,7 @@ def _gerar_excel_rota(df: pd.DataFrame, resumo: dict) -> bytes:
         ws.row_dimensions[ri].height = 20
 
     for ci, h in enumerate(headers, 1):
-        widths = {"Ordem":8,"OS":16,"Ativo":14,"Torre":8,"Empresa":10,"Instalação":18,
+        widths = {"Ordem":8,"OS":16,"SS":12,"Ativo":14,"Torre":8,"Empresa":10,"Instalação":18,
                   "Estado":16,"Status":14,"Limite":12,"Atraso (d)":12,
                   "Prioridade":18,"Score":10,"Dist→(km)":12,"Acum.(km)":12}
         ws.column_dimensions[get_column_letter(ci)].width = widths.get(h, 14)
@@ -520,9 +520,11 @@ if gerar:
         df_rota["TEM_SS_ABERTA"] = df_rota["COD_ATIVO"].isin(ss_abertas_set)
 
     # 5. Carregar SS (contexto operacional — não afeta prioridade/rota)
+    # IMPORTANTE: usar df_selecionado (já inclui torres adicionadas por SS abertas)
+    # para garantir que TODAS as torres da rota tenham suas SS carregadas no popup.
     df_ss  = pd.DataFrame()
     ss_map: dict = {}
-    ativos_rota = tuple(df_priorizado["COD_ATIVO"].dropna().unique().tolist())
+    ativos_rota = tuple(df_selecionado["COD_ATIVO"].dropna().unique().tolist())
     if ativos_rota:
         with st.spinner(f"📋 Carregando SS para {len(ativos_rota)} ativos..."):
             try:
@@ -640,6 +642,20 @@ with tab_rota:
                        "PRIORIDADE", "SCORE", "CLUSTER", "DIST_PROX_KM", "DIST_ACUM_KM"]
         df_exibir = df_rota[[c for c in _cols_rota if c in df_rota.columns]].copy()
 
+        # Coluna SS: primeiro COD_SS vinculado ao ativo (em branco se não houver SS)
+        def _get_cod_ss(cod_ativo):
+            lista = ss_map.get(cod_ativo, [])
+            if not lista:
+                return ""
+            val = lista[0].get("COD_SS", "")
+            return "" if str(val) in ("", "nan", "None", "–") else str(val)
+
+        df_exibir.insert(
+            df_exibir.columns.get_loc("DESC_NUMERO_OS") + 1,
+            "COD_SS",
+            df_exibir["COD_ATIVO"].apply(_get_cod_ss),
+        )
+
         df_exibir["PRIORIDADE"]   = df_exibir["PRIORIDADE"].apply(_label_prioridade)
         df_exibir["DATA_LIMITE"]  = pd.to_datetime(df_exibir["DATA_LIMITE"], errors="coerce").dt.strftime("%d/%m/%Y")
         df_exibir["SCORE"]        = df_exibir["SCORE"].apply(lambda v: f"{float(v):.1f}%" if pd.notna(v) and v != "–" else "–")
@@ -648,6 +664,7 @@ with tab_rota:
 
         rename = {
             "ORDEM_VISITA":  "Ordem",    "DESC_NUMERO_OS": "OS",
+            "COD_SS":        "SS",
             "COD_ATIVO":     "Ativo",    "NUM_TORRE":       "Torre",
             "SIGLA_EMPRESA": "Empresa",  "INSTALACAO":      "Instalação",
             "DESC_ESTADO":   "Estado",   "STATUS_PRAZO":    "Status",
