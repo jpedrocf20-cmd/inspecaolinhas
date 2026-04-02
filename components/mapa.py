@@ -32,17 +32,35 @@ _LABELS_PRIORIDADE = {
     _PRIORIDADE_NORMAL: "🟢 NO PRAZO",
 }
 
-def _torre_svg(cor: str, label: str = "", size: int = 28) -> str:
+def _torre_svg(cor: str, label: str = "", size: int = 28, ss_aberta: bool = False) -> str:
     """
     Retorna HTML com SVG de torre de transmissão colorida por prioridade.
-    label: número de ordem para torres da rota (vazio para torres de fundo).
+    label    : número de ordem para torres da rota (vazio para torres de fundo).
+    ss_aberta: se True, adiciona anel laranja pulsante ao redor da torre.
     """
     s = size
-    # proporções relativas ao tamanho
-    cx = s / 2
-    # estrutura da torre em coordenadas relativas ao centro
-    svg = f"""<div style='width:{s}px;height:{s}px;'>
-<svg xmlns='http://www.w3.org/2000/svg' width='{s}' height='{s}' viewBox='0 0 28 32'>
+    # Anel de destaque para torres com SS N1/N2 em aberto
+    ring_html = ""
+    if ss_aberta:
+        ring_size = s + 14
+        ring_html = f"""<div style='position:absolute;top:50%;left:50%;
+            transform:translate(-50%,-55%);
+            width:{ring_size}px;height:{ring_size}px;
+            border-radius:50%;
+            border:3px solid #FF8C00;
+            box-shadow:0 0 8px 3px #FF8C0088;
+            animation:ss-pulse 1.6s ease-in-out infinite;
+            pointer-events:none;z-index:0'></div>
+        <style>
+        @keyframes ss-pulse {{
+            0%,100% {{ opacity:1; box-shadow:0 0 8px 3px #FF8C0088; }}
+            50%      {{ opacity:0.6; box-shadow:0 0 14px 6px #FF8C00BB; }}
+        }}
+        </style>"""
+
+    svg = f"""<div style='position:relative;width:{s}px;height:{s}px;'>
+{ring_html}
+<svg xmlns='http://www.w3.org/2000/svg' width='{s}' height='{s}' viewBox='0 0 28 32' style='position:relative;z-index:1'>
   <g stroke='{cor}' stroke-width='1.4' fill='none' stroke-linecap='round' stroke-linejoin='round'>
     <!-- pés -->
     <line x1='4' y1='30' x2='9' y2='22'/>
@@ -185,14 +203,17 @@ def build_map(
     df_rota: pd.DataFrame | None = None,
     weather_map: dict | None     = None,
     ss_map: dict | None          = None,
+    ss_abertas_set: set | None   = None,
     usar_cluster: bool           = False,
 ) -> folium.Map:
     """
-    df         : dataset consolidado (JOIN VIEW_PLANO + VW_TORRES via COD_ATIVO)
-    df_rota    : OS na sequência de rota otimizada
-    weather_map: { COD_ATIVO: dict_clima }
-    ss_map     : { COD_ATIVO: [lista de dicts SS] }  — contexto operacional
+    df             : dataset consolidado (JOIN VIEW_PLANO + VW_TORRES via COD_ATIVO)
+    df_rota        : OS na sequência de rota otimizada
+    weather_map    : { COD_ATIVO: dict_clima }
+    ss_map         : { COD_ATIVO: [lista de dicts SS] }  — contexto operacional
+    ss_abertas_set : set de COD_ATIVO com SS N1/N2 em aberto — recebem destaque no mapa
     """
+    ss_abertas_set = ss_abertas_set or set()
     df_valido = df.dropna(subset=["LATITUDE", "LONGITUDE"]) if not df.empty else df
 
     if df_valido.empty:
@@ -212,18 +233,20 @@ def build_map(
     container   = MarkerCluster() if usar_cluster else layer_todas
 
     for _, row in df_valido.iterrows():
-        cor   = _cor(row)
-        clima = (weather_map or {}).get(row["COD_ATIVO"])
+        cor       = _cor(row)
+        clima     = (weather_map or {}).get(row["COD_ATIVO"])
+        tem_ss    = row["COD_ATIVO"] in ss_abertas_set
 
-        icon_html = _torre_svg(cor, label="", size=28)
-        ss_lista = (ss_map or {}).get(row["COD_ATIVO"], [])
-        _n_ss    = len(ss_lista)
+        icon_html = _torre_svg(cor, label="", size=28, ss_aberta=tem_ss)
+        ss_lista  = (ss_map or {}).get(row["COD_ATIVO"], [])
+        _n_ss     = len(ss_lista)
         _tooltip_ss = f" | ⚠️ {_n_ss} SS" if _n_ss else ""
+        _tooltip_ss += " 🔶 SS ABERTA" if tem_ss else ""
         folium.Marker(
             location=[row["LATITUDE"], row["LONGITUDE"]],
             popup=folium.Popup(_popup_html(row, clima, ss_lista), max_width=340),
             tooltip=f"OS {_safe(row.get('DESC_NUMERO_OS'))} — {_safe(row.get('COD_ATIVO'))}{_tooltip_ss}",
-            icon=folium.DivIcon(html=icon_html, icon_size=(28, 32), icon_anchor=(14, 30)),
+            icon=folium.DivIcon(html=icon_html, icon_size=(42, 46), icon_anchor=(14, 30)),
         ).add_to(container if usar_cluster else layer_todas)
 
     if usar_cluster:
@@ -242,19 +265,21 @@ def build_map(
             ).add_to(layer_rota)
 
             for _, row in df_rota_v.iterrows():
-                ordem  = _safe(row.get("ORDEM_VISITA", "?"))
-                cor    = _cor(row)
-                clima  = (weather_map or {}).get(row["COD_ATIVO"])
+                ordem    = _safe(row.get("ORDEM_VISITA", "?"))
+                cor      = _cor(row)
+                clima    = (weather_map or {}).get(row["COD_ATIVO"])
+                tem_ss_r = row["COD_ATIVO"] in ss_abertas_set
 
-                icon_html = _torre_svg(cor, label=str(ordem), size=36)
+                icon_html  = _torre_svg(cor, label=str(ordem), size=36, ss_aberta=tem_ss_r)
                 ss_lista_r = (ss_map or {}).get(row["COD_ATIVO"], [])
                 _n_ss_r    = len(ss_lista_r)
                 _tt_ss_r   = f" | ⚠️ {_n_ss_r} SS" if _n_ss_r else ""
+                _tt_ss_r  += " 🔶 SS ABERTA" if tem_ss_r else ""
                 folium.Marker(
                     location=[row["LATITUDE"], row["LONGITUDE"]],
                     popup=folium.Popup(_popup_html(row, clima, ss_lista_r), max_width=340),
                     tooltip=f"#{ordem} — {_safe(row.get('DESC_NUMERO_OS'))}{_tt_ss_r}",
-                    icon=folium.DivIcon(html=icon_html, icon_size=(36, 40), icon_anchor=(18, 38)),
+                    icon=folium.DivIcon(html=icon_html, icon_size=(50, 54), icon_anchor=(18, 38)),
                 ).add_to(layer_rota)
 
             layer_rota.add_to(mapa)
@@ -272,7 +297,12 @@ def build_map(
         <hr style='border-color:rgba(255,255,255,0.2);margin:4px 0'>
         <span style='color:#00CFFF'>- -</span> Rota otimizada<br>
         <hr style='border-color:rgba(255,255,255,0.2);margin:4px 0'>
-        <span style='color:#FFD700'>⚠️</span> SS vinculadas (tooltip)
+        <span style='color:#FFD700'>⚠️</span> SS vinculadas (tooltip)<br>
+        <hr style='border-color:rgba(255,255,255,0.2);margin:4px 0'>
+        <span style='display:inline-block;width:14px;height:14px;border-radius:50%;
+                     border:2px solid #FF8C00;box-shadow:0 0 6px #FF8C00;
+                     vertical-align:middle;margin-right:4px'></span>
+        <b style='color:#FF8C00'>SS N1/N2 em aberto</b>
     </div>
     """
     mapa.get_root().html.add_child(folium.Element(legenda_html))
