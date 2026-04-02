@@ -582,7 +582,8 @@ def load_torres_com_ss_abertas(
     return df.dropna(subset=["LATITUDE", "LONGITUDE"]).reset_index(drop=True)
 
 
-
+@st.cache_data(ttl=300, show_spinner=False)
+def load_ss_por_ativos(
     cod_ativos: tuple[str, ...],
     _sid: str = "",
 ) -> pd.DataFrame:
