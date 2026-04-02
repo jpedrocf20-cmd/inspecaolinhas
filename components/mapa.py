@@ -102,7 +102,7 @@ def _safe(val, fallback="–") -> str:
     return str(val) if val is not None else str(fallback)
 
 
-def _popup_html(row: pd.Series, clima: dict | None) -> str:
+def _popup_html(row: pd.Series, clima: dict | None, ss_lista: list | None = None) -> str:
     cor         = _cor(row)
     prioridade  = _LABELS_PRIORIDADE.get(int(row.get("PRIORIDADE", 3)), "—")
     dias_atraso = int(row.get("DIAS_ATRASO", 0))
@@ -130,8 +130,39 @@ def _popup_html(row: pd.Series, clima: dict | None) -> str:
         <b>Status:</b> {badge}
         """
 
+    # ── Bloco SS (contexto operacional — não afeta prioridade) ──
+    ss_html = ""
+    if ss_lista:
+        cor_nivel = {1: "#FF2D2D", 2: "#FFD700"}
+        itens = ""
+        for ss in ss_lista:
+            nivel = ss.get("NIVEL_SS", "?")
+            cor_n = cor_nivel.get(int(nivel) if str(nivel).isdigit() else 0, "#999")
+            tipo  = _safe(ss.get("TIPO_DEFEITO", "—"))
+            desc  = _safe(ss.get("DESC_SS", "—"))
+            status = _safe(ss.get("STATUS_SS", "—"))
+            data_ab = ""
+            try:
+                data_ab = pd.to_datetime(ss.get("DATA_ABERTURA")).strftime("%d/%m/%Y")
+            except Exception:
+                pass
+            itens += f"""
+            <div style='border-left:3px solid {cor_n};padding:4px 6px;margin:3px 0;
+                        background:rgba(0,0,0,0.04);border-radius:0 4px 4px 0;font-size:12px'>
+                <span style='background:{cor_n};color:white;padding:1px 5px;
+                             border-radius:3px;font-size:10px;font-weight:bold'>N{nivel}</span>
+                &nbsp;<b>{tipo}</b><br>
+                <span style='color:#555'>{desc}</span><br>
+                <span style='color:#888;font-size:11px'>Status: {status} · {data_ab}</span>
+            </div>"""
+        ss_html = f"""
+        <hr style='margin:6px 0'>
+        <b>⚠️ SS vinculadas ({len(ss_lista)})</b>
+        <div style='max-height:120px;overflow-y:auto;margin-top:4px'>{itens}</div>
+        """
+
     return f"""
-    <div style='font-family:sans-serif;font-size:13px;min-width:220px'>
+    <div style='font-family:sans-serif;font-size:13px;min-width:240px;max-width:320px'>
         <div style='background:{cor};color:white;padding:6px 10px;border-radius:4px;
                     font-weight:bold;font-size:13px;margin-bottom:8px'>
             {prioridade}
@@ -144,6 +175,7 @@ def _popup_html(row: pd.Series, clima: dict | None) -> str:
         {atraso_html}
         <b>Estado:</b> {_safe(row.get('DESC_ESTADO'))}
         {clima_html}
+        {ss_html}
     </div>
     """
 
@@ -152,12 +184,14 @@ def build_map(
     df: pd.DataFrame,
     df_rota: pd.DataFrame | None = None,
     weather_map: dict | None     = None,
+    ss_map: dict | None          = None,
     usar_cluster: bool           = False,
 ) -> folium.Map:
     """
-    df        : dataset consolidado (JOIN VIEW_PLANO + VW_TORRES via COD_ATIVO)
-    df_rota   : OS na sequência de rota otimizada
+    df         : dataset consolidado (JOIN VIEW_PLANO + VW_TORRES via COD_ATIVO)
+    df_rota    : OS na sequência de rota otimizada
     weather_map: { COD_ATIVO: dict_clima }
+    ss_map     : { COD_ATIVO: [lista de dicts SS] }  — contexto operacional
     """
     df_valido = df.dropna(subset=["LATITUDE", "LONGITUDE"]) if not df.empty else df
 
@@ -182,10 +216,13 @@ def build_map(
         clima = (weather_map or {}).get(row["COD_ATIVO"])
 
         icon_html = _torre_svg(cor, label="", size=28)
+        ss_lista = (ss_map or {}).get(row["COD_ATIVO"], [])
+        _n_ss    = len(ss_lista)
+        _tooltip_ss = f" | ⚠️ {_n_ss} SS" if _n_ss else ""
         folium.Marker(
             location=[row["LATITUDE"], row["LONGITUDE"]],
-            popup=folium.Popup(_popup_html(row, clima), max_width=300),
-            tooltip=f"OS {_safe(row.get('DESC_NUMERO_OS'))} — {_safe(row.get('COD_ATIVO'))}",
+            popup=folium.Popup(_popup_html(row, clima, ss_lista), max_width=340),
+            tooltip=f"OS {_safe(row.get('DESC_NUMERO_OS'))} — {_safe(row.get('COD_ATIVO'))}{_tooltip_ss}",
             icon=folium.DivIcon(html=icon_html, icon_size=(28, 32), icon_anchor=(14, 30)),
         ).add_to(container if usar_cluster else layer_todas)
 
@@ -210,10 +247,13 @@ def build_map(
                 clima  = (weather_map or {}).get(row["COD_ATIVO"])
 
                 icon_html = _torre_svg(cor, label=str(ordem), size=36)
+                ss_lista_r = (ss_map or {}).get(row["COD_ATIVO"], [])
+                _n_ss_r    = len(ss_lista_r)
+                _tt_ss_r   = f" | ⚠️ {_n_ss_r} SS" if _n_ss_r else ""
                 folium.Marker(
                     location=[row["LATITUDE"], row["LONGITUDE"]],
-                    popup=folium.Popup(_popup_html(row, clima), max_width=300),
-                    tooltip=f"#{ordem} — {_safe(row.get('DESC_NUMERO_OS'))}",
+                    popup=folium.Popup(_popup_html(row, clima, ss_lista_r), max_width=340),
+                    tooltip=f"#{ordem} — {_safe(row.get('DESC_NUMERO_OS'))}{_tt_ss_r}",
                     icon=folium.DivIcon(html=icon_html, icon_size=(36, 40), icon_anchor=(18, 38)),
                 ).add_to(layer_rota)
 
@@ -230,7 +270,9 @@ def build_map(
         <span style='color:#FFD700'>●</span> Vence em breve<br>
         <span style='color:#4CAF50'>●</span> No prazo<br>
         <hr style='border-color:rgba(255,255,255,0.2);margin:4px 0'>
-        <span style='color:#00CFFF'>- -</span> Rota otimizada
+        <span style='color:#00CFFF'>- -</span> Rota otimizada<br>
+        <hr style='border-color:rgba(255,255,255,0.2);margin:4px 0'>
+        <span style='color:#FFD700'>⚠️</span> SS vinculadas (tooltip)
     </div>
     """
     mapa.get_root().html.add_child(folium.Element(legenda_html))
