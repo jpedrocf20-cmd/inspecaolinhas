@@ -439,26 +439,33 @@ def load_ss_por_ativos(
         SELECT
             SS.COD_SS,
             SS.COD_ATIVO,
-            SS.NIVEL_SS,
-            SS.TIPO_DEFEITO,
-            SS.DESC_SS,
-            SS.STATUS_SS,
-            SS.DATA_ABERTURA
+            SS.NIVEL_CRITICIDADE,
+            SS.codigo_do_defeito    AS TIPO_DEFEITO,
+            SS.descricao_do_defeito AS DESC_SS,
+            SS.ESTADO_SS            AS STATUS_SS,
+            SS.DATA_REQUISICAO      AS DATA_ABERTURA,
+            SS.STATUS_PRAZO,
+            SS.DIAS_EM_ABERTO
         FROM
             VW_SS_TRATADA SS
         WHERE
             SS.COD_ATIVO IN ({placeholders})
-            AND SS.NIVEL_SS IN (1, 2)
+            AND SS.NIVEL_CRITICIDADE IN (1, 2)
         ORDER BY
-            SS.NIVEL_SS ASC,
-            SS.DATA_ABERTURA DESC
+            SS.NIVEL_CRITICIDADE ASC,
+            SS.DATA_REQUISICAO DESC
     """
     with _build_connection() as conn:
         df = pd.read_sql(query, conn, params=list(cod_ativos))
 
-    if "NIVEL_SS" in df.columns:
-        df["NIVEL_SS"] = pd.to_numeric(df["NIVEL_SS"], errors="coerce").astype("Int64")
-    if "DATA_ABERTURA" in df.columns:
-        df["DATA_ABERTURA"] = pd.to_datetime(df["DATA_ABERTURA"], errors="coerce")
+    for col_num in ["NIVEL_CRITICIDADE"]:
+        if col_num in df.columns:
+            df[col_num] = pd.to_numeric(df[col_num], errors="coerce").astype("Int64")
+    for col_dt in ["DATA_ABERTURA", "DATA_REQUISICAO"]:
+        if col_dt in df.columns:
+            df[col_dt] = pd.to_datetime(df[col_dt], errors="coerce")
+    for col_num2 in ["DIAS_EM_ABERTO"]:
+        if col_num2 in df.columns:
+            df[col_num2] = pd.to_numeric(df[col_num2], errors="coerce").fillna(0).astype(int)
 
     return df
