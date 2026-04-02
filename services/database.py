@@ -408,3 +408,57 @@ def load_torres_por_instalacao(
     """
     with _build_connection() as conn:
         return pd.read_sql(query, conn, params=params)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_ss_por_ativos(
+    cod_ativos: tuple[str, ...],
+    _sid: str = "",
+) -> pd.DataFrame:
+    """
+    Carrega Solicitações de Serviço (SS) de nível 1 e 2
+    para os COD_ATIVO fornecidos.
+
+    Regra de negócio
+    ----------------
+    - SS NÃO são usadas para priorização nem para excluir towers.
+    - SS fornecem contexto operacional: defeitos existentes na torre.
+    - Relacionadas às torres exclusivamente via COD_ATIVO.
+    - Apenas níveis 1 e 2 (maior criticidade operacional).
+
+    A view/tabela de SS deve conter pelo menos:
+      COD_ATIVO, NIVEL_SS, TIPO_DEFEITO, DESC_SS, STATUS_SS,
+      DATA_ABERTURA, COD_SS (identificador único)
+
+    Ajuste o nome da view/tabela conforme o banco Fabric.
+    """
+    if not cod_ativos:
+        return pd.DataFrame()
+
+    placeholders = ", ".join(["?"] * len(cod_ativos))
+    query = f"""
+        SELECT
+            SS.COD_SS,
+            SS.COD_ATIVO,
+            SS.NIVEL_SS,
+            SS.TIPO_DEFEITO,
+            SS.DESC_SS,
+            SS.STATUS_SS,
+            SS.DATA_ABERTURA
+        FROM
+            VW_SOLICITACOES_SERVICO SS
+        WHERE
+            SS.COD_ATIVO IN ({placeholders})
+            AND SS.NIVEL_SS IN (1, 2)
+        ORDER BY
+            SS.NIVEL_SS ASC,
+            SS.DATA_ABERTURA DESC
+    """
+    with _build_connection() as conn:
+        df = pd.read_sql(query, conn, params=list(cod_ativos))
+
+    if "NIVEL_SS" in df.columns:
+        df["NIVEL_SS"] = pd.to_numeric(df["NIVEL_SS"], errors="coerce").astype("Int64")
+    if "DATA_ABERTURA" in df.columns:
+        df["DATA_ABERTURA"] = pd.to_datetime(df["DATA_ABERTURA"], errors="coerce")
+
+    return df
