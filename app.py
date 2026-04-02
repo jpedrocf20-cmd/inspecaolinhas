@@ -537,9 +537,12 @@ if gerar:
     ss_atrasadas = 0
     if not df_ss.empty:
         if "STATUS_PRAZO" in df_ss.columns:
-            ss_atrasadas = int((df_ss["STATUS_PRAZO"].str.upper() == "ATRASADA").sum())
-        elif "DIAS_EM_ABERTO" in df_ss.columns:
-            ss_atrasadas = int((pd.to_numeric(df_ss["DIAS_EM_ABERTO"], errors="coerce").fillna(0) > 0).sum())
+            # STATUS_PRAZO pode ser "ATRASADO", "ATRASADA", "ATRASADO (Xd)" — usamos substring
+            ss_atrasadas = int(df_ss["STATUS_PRAZO"].str.upper().str.contains("ATRASAD", na=False).sum())
+        if ss_atrasadas == 0 and "DIAS_EM_ABERTO" in df_ss.columns and "STATUS_SS" in df_ss.columns:
+            # Fallback: SS abertas (não concluídas) com dias em aberto > 0
+            abertas = df_ss["STATUS_SS"].str.upper().str.contains("PENDENTE|ABERTA|ABERTO", na=False)
+            ss_atrasadas = int((pd.to_numeric(df_ss.loc[abertas, "DIAS_EM_ABERTO"], errors="coerce").fillna(0) > 0).sum())
 
     _resumo = resumo_rota(df_rota)
     _resumo["ss_atrasadas"]     = ss_atrasadas
@@ -754,6 +757,10 @@ Percentual de torres vizinhas num raio de **50 km**, normalizado (0–100). Ince
                    "PRIORIDADE", "SCORE", "DESC_ESTADO"]
         df_os_exib = df_os[[c for c in colunas if c in df_os.columns]].copy()
         df_os_exib["DATA_LIMITE"] = pd.to_datetime(df_os_exib["DATA_LIMITE"], errors="coerce").dt.strftime("%d/%m/%Y")
+        if "SCORE" in df_os_exib.columns:
+            df_os_exib["SCORE"] = df_os_exib["SCORE"].apply(
+                lambda v: f"{float(v):.1f}%" if pd.notna(v) else "–"
+            )
 
         st.dataframe(df_os_exib, use_container_width=True, hide_index=True)
 
@@ -821,10 +828,11 @@ As SS registram **defeitos existentes** em torres de transmissão.
             ativo_filtro = st.selectbox("Ativo (COD_ATIVO)", ativo_opts, key="ss_ativo")
 
         df_ss_exib = df_ss.copy()
+        _col_nivel = "NIVEL_CRITICIDADE" if "NIVEL_CRITICIDADE" in df_ss_exib.columns else "NIVEL_SS"
         if nivel_filtro == "🔴 Nível 1":
-            df_ss_exib = df_ss_exib[df_ss_exib["NIVEL_SS"] == 1]
+            df_ss_exib = df_ss_exib[pd.to_numeric(df_ss_exib.get(_col_nivel), errors="coerce") == 1]
         elif nivel_filtro == "🟡 Nível 2":
-            df_ss_exib = df_ss_exib[df_ss_exib["NIVEL_SS"] == 2]
+            df_ss_exib = df_ss_exib[pd.to_numeric(df_ss_exib.get(_col_nivel), errors="coerce") == 2]
         if status_filtro != "Todos" and "STATUS_SS" in df_ss_exib.columns:
             df_ss_exib = df_ss_exib[df_ss_exib["STATUS_SS"] == status_filtro]
         if ativo_filtro != "Todos":
@@ -837,10 +845,11 @@ As SS registram **defeitos existentes** em torres de transmissão.
                 df_ss_exib["DATA_ABERTURA"], errors="coerce"
             ).dt.strftime("%d/%m/%Y")
 
-        # Colorir por nível
+        # Colorir por nível — suporta NIVEL_CRITICIDADE (real) ou NIVEL_SS (legado)
+        _col_nivel_tab = "NIVEL_CRITICIDADE" if "NIVEL_CRITICIDADE" in df_ss_exib.columns else "NIVEL_SS"
         _colunas_ss = [c for c in [
-            "COD_SS", "COD_ATIVO", "NIVEL_SS", "TIPO_DEFEITO",
-            "DESC_SS", "STATUS_SS", "DATA_ABERTURA"
+            "COD_SS", "COD_ATIVO", _col_nivel_tab, "TIPO_DEFEITO",
+            "DESC_SS", "STATUS_SS", "STATUS_PRAZO", "DATA_ABERTURA"
         ] if c in df_ss_exib.columns]
 
         def _cor_nivel_ss(val):
@@ -852,17 +861,29 @@ As SS registram **defeitos existentes** em torres de transmissão.
                 pass
             return ""
 
+        def _cor_status_prazo(val):
+            v = str(val).upper()
+            if "ATRASAD" in v: return "color:#FF6B6B;font-weight:bold"
+            return ""
+
         styled_ss = df_ss_exib[_colunas_ss].style
-        if "NIVEL_SS" in _colunas_ss:
-            styled_ss = styled_ss.map(_cor_nivel_ss, subset=["NIVEL_SS"])
+        if _col_nivel_tab in _colunas_ss:
+            styled_ss = styled_ss.map(_cor_nivel_ss, subset=[_col_nivel_tab])
+        if "STATUS_PRAZO" in _colunas_ss:
+            styled_ss = styled_ss.map(_cor_status_prazo, subset=["STATUS_PRAZO"])
 
         st.dataframe(styled_ss, use_container_width=True, hide_index=True)
 
         # Cruzamento com a rota: quais torres da rota têm SS?
+        # Usa df_ss diretamente (não ss_map) para garantir que todas as torres apareçam
         if df_rota is not None and not df_rota.empty and "COD_ATIVO" in df_ss.columns:
+            # Contagem de SS por ativo a partir do df_ss completo
+            ss_por_ativo = df_ss.groupby("COD_ATIVO").size().to_dict()
+
             ativos_rota_set = set(df_rota["COD_ATIVO"].dropna().unique())
             ativos_ss_set   = set(df_ss["COD_ATIVO"].dropna().unique())
             ativos_cruzados = ativos_rota_set & ativos_ss_set
+
             if ativos_cruzados:
                 st.divider()
                 st.markdown(f"#### 🔗 Torres da rota com SS vinculadas ({len(ativos_cruzados)})")
@@ -870,9 +891,17 @@ As SS registram **defeitos existentes** em torres de transmissão.
                     [c for c in ["ORDEM_VISITA", "COD_ATIVO", "NUM_TORRE", "INSTALACAO",
                                  "STATUS_PRAZO", "PRIORIDADE"] if c in df_rota.columns]
                 ].copy()
-                df_cruzado["SS"] = df_cruzado["COD_ATIVO"].map(
-                    lambda a: f"{len(ss_map.get(a, []))} SS"
+                df_cruzado["Qtd SS"] = df_cruzado["COD_ATIVO"].map(
+                    lambda a: f"{ss_por_ativo.get(a, 0)} SS"
                 )
+                # Verificar SS atrasadas por ativo
+                if "STATUS_PRAZO" in df_ss.columns:
+                    ss_atr_por_ativo = df_ss[
+                        df_ss["STATUS_PRAZO"].str.upper().str.contains("ATRASAD", na=False)
+                    ].groupby("COD_ATIVO").size().to_dict()
+                    df_cruzado["SS Atrasadas"] = df_cruzado["COD_ATIVO"].map(
+                        lambda a: ss_atr_por_ativo.get(a, 0)
+                    )
                 st.dataframe(df_cruzado, use_container_width=True, hide_index=True)
                 st.caption("ℹ️ Essas torres têm defeitos registrados. O inspetor deve verificá-los durante a visita.")
 
