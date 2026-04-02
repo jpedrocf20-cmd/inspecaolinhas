@@ -153,12 +153,23 @@ def _popup_html(row: pd.Series, clima: dict | None, ss_lista: list | None = None
     if ss_lista:
         cor_nivel = {1: "#FF2D2D", 2: "#FFD700"}
         itens = ""
+        tem_ss_atrasada = False
         for ss in ss_lista:
-            nivel = ss.get("NIVEL_SS", "?")
+            # Suporta tanto "NIVEL_CRITICIDADE" (nome real do banco) quanto "NIVEL_SS" (alias legado)
+            nivel = ss.get("NIVEL_CRITICIDADE") or ss.get("NIVEL_SS", "?")
             cor_n = cor_nivel.get(int(nivel) if str(nivel).isdigit() else 0, "#999")
             tipo  = _safe(ss.get("TIPO_DEFEITO", "—"))
             desc  = _safe(ss.get("DESC_SS", "—"))
             status = _safe(ss.get("STATUS_SS", "—"))
+            # Detecta SS atrasada pelo STATUS_PRAZO ou SALDO_DIAS negativo
+            status_prazo = str(ss.get("STATUS_PRAZO", "")).upper()
+            saldo_dias   = ss.get("SALDO_DIAS") or ss.get("DIAS_EM_ABERTO") or 0
+            try:
+                saldo_dias = float(saldo_dias)
+            except Exception:
+                saldo_dias = 0
+            if "ATRASAD" in status_prazo or saldo_dias < 0:
+                tem_ss_atrasada = True
             data_ab = ""
             try:
                 data_ab = pd.to_datetime(ss.get("DATA_ABERTURA")).strftime("%d/%m/%Y")
@@ -173,17 +184,30 @@ def _popup_html(row: pd.Series, clima: dict | None, ss_lista: list | None = None
                 <span style='color:#555'>{desc}</span><br>
                 <span style='color:#888;font-size:11px'>Status: {status} · {data_ab}</span>
             </div>"""
+
+        aviso_ss = ""
+        if tem_ss_atrasada:
+            aviso_ss = """
+            <div style='background:#7B2D00;color:#FFD0A0;padding:4px 8px;border-radius:4px;
+                        font-size:11px;font-weight:bold;margin-top:4px'>
+                🚨 Há SS(s) com prazo vencido nesta torre
+            </div>"""
+
         ss_html = f"""
         <hr style='margin:6px 0'>
         <b>⚠️ SS vinculadas ({len(ss_lista)})</b>
         <div style='max-height:120px;overflow-y:auto;margin-top:4px'>{itens}</div>
+        {aviso_ss}
         """
 
     return f"""
     <div style='font-family:sans-serif;font-size:13px;min-width:240px;max-width:320px'>
         <div style='background:{cor};color:white;padding:6px 10px;border-radius:4px;
-                    font-weight:bold;font-size:13px;margin-bottom:8px'>
+                    font-weight:bold;font-size:13px;margin-bottom:2px'>
             {prioridade}
+        </div>
+        <div style='font-size:10px;color:#888;margin-bottom:6px;padding-left:2px'>
+            Status referente à OS de inspeção
         </div>
         <b>OS:</b> {_safe(row.get('DESC_NUMERO_OS'))} &nbsp;|&nbsp; <b>Ativo:</b> {_safe(row.get('COD_ATIVO'))}<br>
         <b>Torre:</b> {_safe(row.get('NUM_TORRE'))} &nbsp;|&nbsp; <b>Criticidade:</b> {_safe(row.get('CRITICIDADE'))}<br>
