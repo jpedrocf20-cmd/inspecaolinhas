@@ -503,11 +503,12 @@ if resumo:
     c7.metric("📊 Score médio",        f"{resumo['score_medio']}%")
     st.divider()
 
-tab_mapa, tab_rota, tab_os, tab_ss, tab_clima = st.tabs([
+tab_mapa, tab_rota, tab_os, tab_ss, tab_ss_empresa, tab_clima = st.tabs([
     "🗺️  Mapa",
     "📋  Rota",
     "📂  OS Detalhadas",
     "⚠️  SS",
+    "📊  SS por Empresa",
     "🌦️  Clima 5 dias",
 ])
 
@@ -614,31 +615,50 @@ A prioridade é calculada automaticamente com base no prazo de cada OS:
 
 | Valor | Nível | Critério |
 |-------|-------|----------|
-| **1** | 🔴 **ATRASADA** | `STATUS_PRAZO = 'ATRASADA'` — prazo já vencido |
+| **1** | 🔴 **ATRASADA** | `STATUS_PRAZO = 'ATRASADA'` ou `DATA_LIMITE` já vencida |
 | **2** | 🟡 **ALTA** | `DATA_LIMITE` vence em **≤ 7 dias** |
 | **3** | 🟢 **NORMAL** | Demais OS dentro do prazo |
 
 ---
 
-### 📊 Score (0 – 100)
+### 📊 Score Híbrido (0 – 100)
 
-O Score é um índice composto de urgência, calculado assim:
+O Score combina **urgência + localização geográfica** em três componentes:
 
 ```
-Score = (4 − Prioridade) × 30  +  min(Dias de Atraso, 30) × 0,33
+Score = 55% × Score_Urgência
+      + 30% × Bônus_Cluster
+      + 15% × Bônus_Densidade
 ```
 
-| Componente | Peso | Máximo |
-|---|---|---|
-| Prioridade | `(4 − P) × 30` | 90 pts |
-| Dias de atraso | `dias × 0,33` | ~10 pts |
-| **Total** | | **100 pts** |
+#### Score de Urgência (base)
+```
+base        = (4 − Prioridade) × 30       → máx 90 pts
+bônus_atraso = min(atraso, 60) × 0,15     → máx  9 pts
+bônus_vencer = (7 − dias_p_vencer)/7 × 10 → máx 10 pts  (só P=2)
+```
 
-> **Exemplo:** OS atrasada há 15 dias → Score = (4−1)×30 + 15×0,33 = **90 + 5 = 95**
+| Prioridade | Base | + Atraso | + Vencimento |
+|---|---|---|---|
+| 🔴 ATRASADA (P=1) | 90 pts | até +9 | — |
+| 🟡 ALTA (P=2) | 60 pts | até +9 | até +10 |
+| 🟢 NORMAL (P=3) | 30 pts | até +9 | — |
+
+#### Bônus Cluster
+Proporção do cluster em relação ao maior cluster identificado (0–100). OS em clusters maiores recebem bônus mais alto — priorizando regiões com mais inspeções concentradas.
+
+#### Bônus Densidade
+Percentual de torres vizinhas num raio de **50 km**, normalizado (0–100). Incentiva rotas mais compactas geograficamente.
 
 ---
 
-> 💡 A ordenação da tabela segue: **Prioridade ↑ → Dias de Atraso ↓ → Data Limite ↑**
+> **Exemplo:** OS atrasada há 20 dias, no maior cluster, região densa
+> - Urgência: 90 + min(20,60)×0,15 = **93**
+> - Score = 0,55×93 + 0,30×100 + 0,15×100 = **51 + 30 + 15 = 96**
+
+---
+
+> 💡 A tabela ordena por: **Prioridade ↑ → Score ↓**
 """)
 
         col_filtro, col_vazio = st.columns([1, 3])
@@ -795,6 +815,198 @@ As SS registram **defeitos existentes** em torres de transmissão.
     else:
         st.info("Gere a rota para ver as SS vinculadas.")
 
+
+
+# ── TAB SS POR EMPRESA ──
+with tab_ss_empresa:
+    st.markdown("#### 📊 SS Atrasadas por Empresa e Instalação")
+    st.caption(
+        "Esta aba é independente dos filtros do sidebar. "
+        "Use-a como **painel de apoio** para identificar quais empresas e instalações "
+        "têm mais SS em aberto (níveis 1 e 2) e SS atrasadas — e então aplique esses filtros na sidebar para gerar a rota."
+    )
+
+    if df_ss is not None and not df_ss.empty:
+        df_ss_emp = df_ss.copy()
+
+        # Garantir colunas necessárias
+        tem_empresa    = "SIGLA_EMPRESA" in df_ss_emp.columns
+        tem_instalacao = "INSTALACAO" in df_ss_emp.columns
+        tem_nivel      = "NIVEL_SS" in df_ss_emp.columns
+        tem_status     = "STATUS_PRAZO" in df_ss_emp.columns or "STATUS_SS" in df_ss_emp.columns
+
+        col_empresa    = "SIGLA_EMPRESA" if tem_empresa else None
+        col_instalacao = "INSTALACAO"    if tem_instalacao else None
+
+        # Detectar coluna de status de prazo
+        col_status_prazo = None
+        if "STATUS_PRAZO" in df_ss_emp.columns:
+            col_status_prazo = "STATUS_PRAZO"
+        elif "STATUS_SS" in df_ss_emp.columns:
+            col_status_prazo = "STATUS_SS"
+
+        # ── Resumo por empresa ──────────────────────────────────
+        if col_empresa:
+            grp_cols = [col_empresa]
+            if col_instalacao:
+                grp_cols.append(col_instalacao)
+
+            agg = df_ss_emp.groupby(grp_cols).agg(
+                Total_SS=("COD_SS" if "COD_SS" in df_ss_emp.columns else df_ss_emp.columns[0], "count"),
+            ).reset_index()
+
+            if tem_nivel:
+                n1 = df_ss_emp[df_ss_emp["NIVEL_SS"] == 1].groupby(grp_cols).size().reset_index(name="SS_Nivel_1")
+                n2 = df_ss_emp[df_ss_emp["NIVEL_SS"] == 2].groupby(grp_cols).size().reset_index(name="SS_Nivel_2")
+                agg = agg.merge(n1, on=grp_cols, how="left").merge(n2, on=grp_cols, how="left")
+                agg["SS_Nivel_1"] = agg["SS_Nivel_1"].fillna(0).astype(int)
+                agg["SS_Nivel_2"] = agg["SS_Nivel_2"].fillna(0).astype(int)
+
+            if col_status_prazo:
+                atrasadas = (
+                    df_ss_emp[df_ss_emp[col_status_prazo].str.upper().str.contains("ATRAS", na=False)]
+                    .groupby(grp_cols).size().reset_index(name="SS_Atrasadas")
+                )
+                agg = agg.merge(atrasadas, on=grp_cols, how="left")
+                agg["SS_Atrasadas"] = agg["SS_Atrasadas"].fillna(0).astype(int)
+
+            # Ordenar: mais SS atrasadas primeiro, depois total
+            sort_cols = []
+            if "SS_Atrasadas" in agg.columns:
+                sort_cols.append("SS_Atrasadas")
+            if tem_nivel:
+                sort_cols.append("SS_Nivel_1")
+            sort_cols.append("Total_SS")
+            agg = agg.sort_values(sort_cols, ascending=False).reset_index(drop=True)
+
+            # Renomear para exibição
+            rename_map = {}
+            if col_empresa:    rename_map[col_empresa]    = "Empresa"
+            if col_instalacao: rename_map[col_instalacao] = "Instalação"
+            agg = agg.rename(columns=rename_map)
+
+            # ── Métricas rápidas ──
+            m1, m2, m3, m4 = st.columns(4)
+            empresas_uniq = df_ss_emp[col_empresa].nunique() if col_empresa else "—"
+            insts_uniq    = df_ss_emp[col_instalacao].nunique() if col_instalacao else "—"
+            total_ss      = len(df_ss_emp)
+            ss_atr_total  = int((df_ss_emp[col_status_prazo].str.upper().str.contains("ATRAS", na=False)).sum()) if col_status_prazo else "—"
+
+            m1.metric("🏢 Empresas", empresas_uniq)
+            m2.metric("📍 Instalações", insts_uniq)
+            m3.metric("📋 SS Totais (N1+N2)", total_ss)
+            m4.metric("🔴 SS Atrasadas", ss_atr_total)
+
+            st.divider()
+
+            # ── Filtro de empresa (independente do sidebar) ──
+            col_fe, col_fi, col_fv = st.columns([1, 1, 2])
+            with col_fe:
+                emp_opts = ["Todas"] + sorted(df_ss_emp[col_empresa].dropna().unique().tolist())
+                emp_f    = st.selectbox("Filtrar empresa", emp_opts, key="ss_emp_filtro_empresa")
+            with col_fi:
+                if col_instalacao and emp_f != "Todas":
+                    ins_opts = ["Todas"] + sorted(
+                        df_ss_emp[df_ss_emp[col_empresa] == emp_f][col_instalacao].dropna().unique().tolist()
+                    )
+                elif col_instalacao:
+                    ins_opts = ["Todas"] + sorted(df_ss_emp[col_instalacao].dropna().unique().tolist())
+                else:
+                    ins_opts = ["Todas"]
+                ins_f = st.selectbox("Filtrar instalação", ins_opts, key="ss_emp_filtro_inst")
+            with col_fv:
+                vis_opts = ["Resumo por empresa/instalação", "SS individuais"]
+                vis_f    = st.selectbox("Visualização", vis_opts, key="ss_emp_visao")
+
+            # Aplicar filtros locais
+            agg_filtrado = agg.copy()
+            if emp_f != "Todas":
+                agg_filtrado = agg_filtrado[agg_filtrado["Empresa"] == emp_f]
+            if ins_f != "Todas" and col_instalacao:
+                agg_filtrado = agg_filtrado[agg_filtrado["Instalação"] == ins_f]
+
+            if vis_f == "Resumo por empresa/instalação":
+                # Colorir atrasadas
+                def _style_ss_emp(v):
+                    if isinstance(v, (int, float)) and v > 0:
+                        return "background:#FF2D2D22;color:#FF6B6B;font-weight:bold"
+                    return ""
+
+                styled_agg = agg_filtrado.style
+                if "SS_Atrasadas" in agg_filtrado.columns:
+                    styled_agg = styled_agg.map(_style_ss_emp, subset=["SS_Atrasadas"])
+                if "SS_Nivel_1" in agg_filtrado.columns:
+                    styled_agg = styled_agg.map(_style_ss_emp, subset=["SS_Nivel_1"])
+
+                st.dataframe(styled_agg, use_container_width=True, hide_index=True)
+
+                st.info(
+                    "💡 **Como usar:** Identifique as empresas/instalações com mais SS atrasadas ou de nível 1, "
+                    "depois vá ao **sidebar** e selecione-as nos filtros de Empresa e Instalação para gerar a rota priorizada."
+                )
+
+            else:
+                # Exibir SS individuais filtradas
+                df_ind = df_ss_emp.copy()
+                if emp_f != "Todas" and col_empresa:
+                    df_ind = df_ind[df_ind[col_empresa] == emp_f]
+                if ins_f != "Todas" and col_instalacao:
+                    df_ind = df_ind[df_ind[col_instalacao] == ins_f]
+
+                colunas_ind = [c for c in [
+                    "COD_SS", col_empresa, col_instalacao, "COD_ATIVO",
+                    "NIVEL_SS", "TIPO_DEFEITO", "DESC_SS",
+                    col_status_prazo, "DATA_ABERTURA", "DIAS_EM_ABERTO"
+                ] if c and c in df_ind.columns]
+
+                if "DATA_ABERTURA" in df_ind.columns:
+                    df_ind = df_ind.copy()
+                    df_ind["DATA_ABERTURA"] = pd.to_datetime(
+                        df_ind["DATA_ABERTURA"], errors="coerce"
+                    ).dt.strftime("%d/%m/%Y")
+
+                def _cor_ind(val):
+                    try:
+                        if int(val) == 1:
+                            return "background:#FF2D2D22;color:#FF6B6B;font-weight:bold"
+                        if int(val) == 2:
+                            return "background:#FFD70022;color:#FFD700"
+                    except Exception:
+                        if "ATRAS" in str(val).upper():
+                            return "background:#FF2D2D22;color:#FF6B6B;font-weight:bold"
+                    return ""
+
+                styled_ind = df_ind[colunas_ind].style
+                if "NIVEL_SS" in colunas_ind:
+                    styled_ind = styled_ind.map(_cor_ind, subset=["NIVEL_SS"])
+                if col_status_prazo and col_status_prazo in colunas_ind:
+                    styled_ind = styled_ind.map(_cor_ind, subset=[col_status_prazo])
+
+                st.dataframe(styled_ind, use_container_width=True, hide_index=True)
+
+        else:
+            st.warning("Coluna SIGLA_EMPRESA não encontrada nas SS carregadas.")
+
+        # ── Exportar ──
+        buf_emp = io.BytesIO()
+        _export_cols = [c for c in df_ss_emp.columns]
+        df_ss_emp[_export_cols].to_excel(buf_emp, index=False, engine="openpyxl")
+        st.download_button(
+            "📥 Exportar SS por Empresa (Excel)", buf_emp.getvalue(),
+            "ss_por_empresa.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_ss_empresa",
+        )
+
+    elif df_consolidado is not None:
+        st.info(
+            "Nenhuma SS carregada ainda. Clique em **Gerar Rota Otimizada** para carregar as SS e ver este painel."
+        )
+    else:
+        st.info(
+            "👈 Configure os filtros no sidebar e clique em **Gerar Rota Otimizada** para carregar as SS. "
+            "Este painel funciona com os dados já carregados, independente do filtro ativo."
+        )
 
 
 # ── TAB CLIMA 5 DIAS ──
