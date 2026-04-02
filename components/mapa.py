@@ -175,6 +175,24 @@ def _popup_html(row: pd.Series, clima: dict | None, ss_lista: list | None = None
                 data_ab = pd.to_datetime(ss.get("DATA_ABERTURA")).strftime("%d/%m/%Y")
             except Exception:
                 pass
+            # Exibir saldo de dias se disponível
+            saldo_str = ""
+            try:
+                saldo_v = float(ss.get("SALDO_DIAS") or 0)
+                if saldo_v < 0:
+                    saldo_str = f" <span style='color:#FF6B6B;font-weight:bold'>({int(saldo_v)}d)</span>"
+                elif saldo_v == 0:
+                    saldo_str = " <span style='color:#FFD700'>(vence hoje)</span>"
+            except Exception:
+                pass
+            # Data limite se disponível
+            data_lim = ""
+            try:
+                dl = pd.to_datetime(ss.get("DATA_LIMITE"))
+                if pd.notna(dl):
+                    data_lim = f" · Limite: {dl.strftime('%d/%m/%Y')}"
+            except Exception:
+                pass
             itens += f"""
             <div style='border-left:3px solid {cor_n};padding:4px 6px;margin:3px 0;
                         background:rgba(0,0,0,0.04);border-radius:0 4px 4px 0;font-size:12px'>
@@ -182,15 +200,22 @@ def _popup_html(row: pd.Series, clima: dict | None, ss_lista: list | None = None
                              border-radius:3px;font-size:10px;font-weight:bold'>N{nivel}</span>
                 &nbsp;<b>{tipo}</b><br>
                 <span style='color:#555'>{desc}</span><br>
-                <span style='color:#888;font-size:11px'>Status: {status} · {data_ab}</span>
+                <span style='color:#888;font-size:11px'>Status: {status}{saldo_str} · {data_ab}{data_lim}</span>
             </div>"""
 
+        # Contagem de SS atrasadas para badge
+        n_atr = sum(
+            1 for ss in ss_lista
+            if "ATRASAD" in str(ss.get("STATUS_PRAZO", "")).upper()
+            or (float(ss.get("SALDO_DIAS") or 0) < 0)
+        )
         aviso_ss = ""
-        if tem_ss_atrasada:
-            aviso_ss = """
+        if n_atr > 0:
+            txt_atr = f"{n_atr} SS com prazo vencido" if n_atr > 1 else "1 SS com prazo vencido"
+            aviso_ss = f"""
             <div style='background:#7B2D00;color:#FFD0A0;padding:4px 8px;border-radius:4px;
                         font-size:11px;font-weight:bold;margin-top:4px'>
-                🚨 Há SS(s) com prazo vencido nesta torre
+                🚨 Há {txt_atr} nesta torre
             </div>"""
 
         ss_html = f"""
