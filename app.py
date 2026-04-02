@@ -463,12 +463,23 @@ if gerar:
             except Exception as e:
                 st.warning(f"⚠️ SS não carregadas: {e}")
 
+    # Contar SS atrasadas (STATUS_PRAZO == 'ATRASADA' ou DIAS_EM_ABERTO > PRAZO_DIAS)
+    ss_atrasadas = 0
+    if not df_ss.empty:
+        if "STATUS_PRAZO" in df_ss.columns:
+            ss_atrasadas = int((df_ss["STATUS_PRAZO"].str.upper() == "ATRASADA").sum())
+        elif "DIAS_EM_ABERTO" in df_ss.columns:
+            ss_atrasadas = int((pd.to_numeric(df_ss["DIAS_EM_ABERTO"], errors="coerce").fillna(0) > 0).sum())
+
+    _resumo = resumo_rota(df_rota)
+    _resumo["ss_atrasadas"] = ss_atrasadas
+
     st.session_state.df_consolidado = df_priorizado
     st.session_state.df_rota        = df_rota
     st.session_state.df_ss          = df_ss
     st.session_state.ss_map         = ss_map
     st.session_state.weather_map    = weather_map
-    st.session_state.resumo         = resumo_rota(df_rota)
+    st.session_state.resumo         = _resumo
 
 
 # ──────────────────────────────────────────────
@@ -482,13 +493,14 @@ weather_map    = st.session_state.weather_map
 resumo         = st.session_state.resumo
 
 if resumo:
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("📋 OS na rota",       resumo["total_os"])
-    c2.metric("🔴 Atrasadas",         resumo["os_atrasadas"])
-    c3.metric("📏 Distância total",   f"{resumo['distancia_total']} km")
-    c4.metric("📍 Dist. média/salto", f"{resumo.get('distancia_media', '-')} km")
-    c5.metric("🗂️ Clusters",          resumo.get("n_clusters", "-"))
-    c6.metric("📊 Score médio",       f"{resumo['score_medio']}")
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    c1.metric("📋 OS na rota",        resumo["total_os"])
+    c2.metric("🔴 OS Atrasadas",       resumo["os_atrasadas"])
+    c3.metric("⚠️ SS Atrasadas",       resumo.get("ss_atrasadas", "—"))
+    c4.metric("📏 Distância total",    f"{resumo['distancia_total']} km")
+    c5.metric("📍 Dist. média/salto",  f"{resumo.get('distancia_media', '-')} km")
+    c6.metric("🗂️ Clusters",           resumo.get("n_clusters", "-"))
+    c7.metric("📊 Score médio",        f"{resumo['score_medio']}%")
     st.divider()
 
 tab_mapa, tab_rota, tab_os, tab_ss, tab_clima = st.tabs([
@@ -551,7 +563,7 @@ with tab_rota:
 
         df_exibir["PRIORIDADE"]   = df_exibir["PRIORIDADE"].apply(_label_prioridade)
         df_exibir["DATA_LIMITE"]  = pd.to_datetime(df_exibir["DATA_LIMITE"], errors="coerce").dt.strftime("%d/%m/%Y")
-        df_exibir["SCORE"]        = df_exibir["SCORE"].apply(lambda v: f"{v:.1f}%" if pd.notna(v) else "–")
+        df_exibir["SCORE"]        = df_exibir["SCORE"].apply(lambda v: f"{float(v):.1f}%" if pd.notna(v) and v != "–" else "–")
         df_exibir["DIST_PROX_KM"] = df_exibir["DIST_PROX_KM"].apply(lambda v: f"{v:.1f}" if v else "–")
         df_exibir["DIST_ACUM_KM"] = df_exibir["DIST_ACUM_KM"].apply(lambda v: f"{v:.1f}" if v else "–")
 
