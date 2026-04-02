@@ -445,7 +445,7 @@ def load_ss_por_ativos(
             SS.STATUS_SS,
             SS.DATA_ABERTURA
         FROM
-            VW_SOLICITACOES_SERVICO SS
+            VW_SS_TRATADA SS
         WHERE
             SS.COD_ATIVO IN ({placeholders})
             AND SS.NIVEL_SS IN (1, 2)
