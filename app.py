@@ -19,7 +19,7 @@ from services.database import (
     iniciar_device_flow, concluir_login, is_authenticated,
     tentar_login_silencioso, logout,
     load_inspecoes_consolidadas, get_filter_options,
-    load_torres_por_instalacao, sid_atual,
+    load_torres_por_instalacao, load_ss_por_ativos, sid_atual,
 )
 from services.weather import get_weather, get_forecast_5d, weather_badge
 from components.mapa  import build_map
@@ -253,6 +253,8 @@ st.markdown("""
 _defaults = {
     "df_consolidado": None,
     "df_rota":        None,
+    "df_ss":          None,
+    "ss_map":         {},
     "weather_map":    {},
     "resumo":         {},
     "fabric_authed":  False,
@@ -447,8 +449,24 @@ if gerar:
     # 4. Otimização da rota (routing baseado em OS + coords via COD_ATIVO)
     df_rota = otimizar_rota(df_selecionado, ponto_partida, usar_dois_opt=usar_dois_opt)
 
+    # 5. Carregar SS (contexto operacional — não afeta prioridade/rota)
+    df_ss  = pd.DataFrame()
+    ss_map: dict = {}
+    ativos_rota = tuple(df_priorizado["COD_ATIVO"].dropna().unique().tolist())
+    if ativos_rota:
+        with st.spinner(f"📋 Carregando SS para {len(ativos_rota)} ativos..."):
+            try:
+                df_ss = load_ss_por_ativos(ativos_rota, _sid=sid_atual())
+                if not df_ss.empty:
+                    for ativo, grupo in df_ss.groupby("COD_ATIVO"):
+                        ss_map[ativo] = grupo.to_dict(orient="records")
+            except Exception as e:
+                st.warning(f"⚠️ SS não carregadas: {e}")
+
     st.session_state.df_consolidado = df_priorizado
     st.session_state.df_rota        = df_rota
+    st.session_state.df_ss          = df_ss
+    st.session_state.ss_map         = ss_map
     st.session_state.weather_map    = weather_map
     st.session_state.resumo         = resumo_rota(df_rota)
 
@@ -458,6 +476,8 @@ if gerar:
 # ──────────────────────────────────────────────
 df_consolidado = st.session_state.df_consolidado
 df_rota        = st.session_state.df_rota
+df_ss          = st.session_state.df_ss
+ss_map         = st.session_state.ss_map
 weather_map    = st.session_state.weather_map
 resumo         = st.session_state.resumo
 
@@ -471,10 +491,11 @@ if resumo:
     c6.metric("📊 Score médio",       f"{resumo['score_medio']}")
     st.divider()
 
-tab_mapa, tab_rota, tab_os, tab_clima = st.tabs([
+tab_mapa, tab_rota, tab_os, tab_ss, tab_clima = st.tabs([
     "🗺️  Mapa",
     "📋  Rota",
     "📂  OS Detalhadas",
+    "⚠️  SS",
     "🌦️  Clima 5 dias",
 ])
 
@@ -483,7 +504,7 @@ tab_mapa, tab_rota, tab_os, tab_clima = st.tabs([
 with tab_mapa:
     if df_consolidado is not None and not df_consolidado.empty:
         _hash = f"{len(df_rota)}_{df_rota['COD_ATIVO'].iloc[0] if df_rota is not None and not df_rota.empty else 'x'}"
-        mapa  = build_map(df=df_consolidado, df_rota=df_rota, weather_map=weather_map)
+        mapa  = build_map(df=df_consolidado, df_rota=df_rota, weather_map=weather_map, ss_map=ss_map)
         st_folium(mapa, use_container_width=True, height=580,
                   key=f"mapa_{_hash}", returned_objects=[])
     else:
@@ -635,6 +656,133 @@ Score = (4 − Prioridade) × 30  +  min(Dias de Atraso, 30) × 0,33
                            key="dl_os")
     else:
         st.info("Gere a rota para ver as OS detalhadas.")
+
+
+
+# ── TAB SS ──
+with tab_ss:
+    if df_ss is not None and not df_ss.empty:
+        n_ativos_ss = df_ss["COD_ATIVO"].nunique() if "COD_ATIVO" in df_ss.columns else 0
+        n1 = int((df_ss["NIVEL_SS"] == 1).sum()) if "NIVEL_SS" in df_ss.columns else 0
+        n2 = int((df_ss["NIVEL_SS"] == 2).sum()) if "NIVEL_SS" in df_ss.columns else 0
+
+        col_t, col_aj = st.columns([5, 1])
+        with col_t:
+            st.markdown(f"#### ⚠️ {len(df_ss)} Solicitações de Serviço — {n_ativos_ss} ativos")
+            st.caption(
+                f"🔴 **Nível 1:** {n1}  &nbsp;&nbsp; 🟡 **Nível 2:** {n2}  &nbsp;&nbsp; "
+                "SS são contexto operacional — **não afetam prioridade nem rota**."
+            )
+        with col_aj:
+            with st.popover("ℹ️ O que são SS?", use_container_width=True):
+                st.markdown("""
+### ⚠️ Solicitações de Serviço (SS)
+
+As SS registram **defeitos existentes** em torres de transmissão.
+
+#### Como são usadas neste sistema
+| Uso | Comportamento |
+|-----|--------------|
+| Priorização de OS | ❌ Não afeta |
+| Inclusão/exclusão da rota | ❌ Não afeta |
+| Contexto na inspeção | ✅ Exibidas junto à OS |
+| Popup no mapa | ✅ Visíveis ao clicar na torre |
+
+#### Níveis exibidos
+| Nível | Criticidade |
+|-------|-------------|
+| **1** | 🔴 Alta — defeito crítico |
+| **2** | 🟡 Média — defeito relevante |
+
+> O inspetor vê as SS associadas à torre ao planejar a visita,
+> podendo se preparar com ferramentas e peças adequadas.
+""")
+
+        # Filtros
+        col_f1, col_f2, col_f3 = st.columns([1, 1, 2])
+        with col_f1:
+            nivel_filtro = st.selectbox(
+                "Nível SS", ["Todos", "🔴 Nível 1", "🟡 Nível 2"], key="ss_nivel"
+            )
+        with col_f2:
+            status_opts = ["Todos"]
+            if "STATUS_SS" in df_ss.columns:
+                status_opts += sorted(df_ss["STATUS_SS"].dropna().unique().tolist())
+            status_filtro = st.selectbox("Status", status_opts, key="ss_status")
+        with col_f3:
+            ativo_opts = ["Todos"] + sorted(df_ss["COD_ATIVO"].dropna().unique().tolist())
+            ativo_filtro = st.selectbox("Ativo (COD_ATIVO)", ativo_opts, key="ss_ativo")
+
+        df_ss_exib = df_ss.copy()
+        if nivel_filtro == "🔴 Nível 1":
+            df_ss_exib = df_ss_exib[df_ss_exib["NIVEL_SS"] == 1]
+        elif nivel_filtro == "🟡 Nível 2":
+            df_ss_exib = df_ss_exib[df_ss_exib["NIVEL_SS"] == 2]
+        if status_filtro != "Todos" and "STATUS_SS" in df_ss_exib.columns:
+            df_ss_exib = df_ss_exib[df_ss_exib["STATUS_SS"] == status_filtro]
+        if ativo_filtro != "Todos":
+            df_ss_exib = df_ss_exib[df_ss_exib["COD_ATIVO"] == ativo_filtro]
+
+        # Formatar data
+        if "DATA_ABERTURA" in df_ss_exib.columns:
+            df_ss_exib = df_ss_exib.copy()
+            df_ss_exib["DATA_ABERTURA"] = pd.to_datetime(
+                df_ss_exib["DATA_ABERTURA"], errors="coerce"
+            ).dt.strftime("%d/%m/%Y")
+
+        # Colorir por nível
+        _colunas_ss = [c for c in [
+            "COD_SS", "COD_ATIVO", "NIVEL_SS", "TIPO_DEFEITO",
+            "DESC_SS", "STATUS_SS", "DATA_ABERTURA"
+        ] if c in df_ss_exib.columns]
+
+        def _cor_nivel_ss(val):
+            try:
+                n = int(val)
+                if n == 1: return "background:#FF2D2D22;color:#FF6B6B;font-weight:bold"
+                if n == 2: return "background:#FFD70022;color:#FFD700"
+            except Exception:
+                pass
+            return ""
+
+        styled_ss = df_ss_exib[_colunas_ss].style
+        if "NIVEL_SS" in _colunas_ss:
+            styled_ss = styled_ss.map(_cor_nivel_ss, subset=["NIVEL_SS"])
+
+        st.dataframe(styled_ss, use_container_width=True, hide_index=True)
+
+        # Cruzamento com a rota: quais torres da rota têm SS?
+        if df_rota is not None and not df_rota.empty and "COD_ATIVO" in df_ss.columns:
+            ativos_rota_set = set(df_rota["COD_ATIVO"].dropna().unique())
+            ativos_ss_set   = set(df_ss["COD_ATIVO"].dropna().unique())
+            ativos_cruzados = ativos_rota_set & ativos_ss_set
+            if ativos_cruzados:
+                st.divider()
+                st.markdown(f"#### 🔗 Torres da rota com SS vinculadas ({len(ativos_cruzados)})")
+                df_cruzado = df_rota[df_rota["COD_ATIVO"].isin(ativos_cruzados)][
+                    [c for c in ["ORDEM_VISITA", "COD_ATIVO", "NUM_TORRE", "INSTALACAO",
+                                 "STATUS_PRAZO", "PRIORIDADE"] if c in df_rota.columns]
+                ].copy()
+                df_cruzado["SS"] = df_cruzado["COD_ATIVO"].map(
+                    lambda a: f"{len(ss_map.get(a, []))} SS"
+                )
+                st.dataframe(df_cruzado, use_container_width=True, hide_index=True)
+                st.caption("ℹ️ Essas torres têm defeitos registrados. O inspetor deve verificá-los durante a visita.")
+
+        # Export
+        buf_ss = io.BytesIO()
+        df_ss_exib[_colunas_ss].to_excel(buf_ss, index=False, engine="openpyxl")
+        st.download_button(
+            "📥 Exportar SS Excel", buf_ss.getvalue(), "ss_vinculadas.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_ss",
+        )
+
+    elif df_consolidado is not None:
+        st.info("Nenhuma SS de nível 1 ou 2 encontrada para os ativos carregados.")
+    else:
+        st.info("Gere a rota para ver as SS vinculadas.")
+
 
 
 # ── TAB CLIMA 5 DIAS ──
