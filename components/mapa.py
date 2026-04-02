@@ -193,12 +193,14 @@ def _popup_html(row: pd.Series, clima: dict | None, ss_lista: list | None = None
                     data_lim = f" · Limite: {dl.strftime('%d/%m/%Y')}"
             except Exception:
                 pass
+            cod_ss_val = _safe(ss.get("COD_SS", ""), fallback="")
+            cod_ss_html = f"&nbsp;<span style='color:#888;font-size:10px'>SS: {cod_ss_val}</span>" if cod_ss_val else ""
             itens += f"""
             <div style='border-left:3px solid {cor_n};padding:4px 6px;margin:3px 0;
                         background:rgba(0,0,0,0.04);border-radius:0 4px 4px 0;font-size:12px'>
                 <span style='background:{cor_n};color:white;padding:1px 5px;
                              border-radius:3px;font-size:10px;font-weight:bold'>N{nivel}</span>
-                &nbsp;<b>{tipo}</b><br>
+                &nbsp;<b>{tipo}</b>{cod_ss_html}<br>
                 <span style='color:#555'>{desc}</span><br>
                 <span style='color:#888;font-size:11px'>Status: {status}{saldo_str} · {data_ab}{data_lim}</span>
             </div>"""
@@ -225,6 +227,20 @@ def _popup_html(row: pd.Series, clima: dict | None, ss_lista: list | None = None
         {aviso_ss}
         """
 
+    # Campo OS: exibir em branco se não houver OS vinculada (ex: torres adicionadas só por SS)
+    desc_os = row.get('DESC_NUMERO_OS')
+    _os_sem_os = not desc_os or str(desc_os).startswith("SS-")
+    os_display = "" if _os_sem_os else _safe(desc_os)
+
+    # Campo SS: COD_SS da primeira SS vinculada (se houver)
+    _cod_ss_popup = ""
+    if ss_lista:
+        _first_cod = ss_lista[0].get("COD_SS", "")
+        if _first_cod and str(_first_cod) not in ("–", "nan", "None", ""):
+            _n_extra = len(ss_lista) - 1
+            _extra_txt = f" +{_n_extra}" if _n_extra > 0 else ""
+            _cod_ss_popup = f"<b>SS:</b> {_first_cod}{_extra_txt}<br>"
+
     return f"""
     <div style='font-family:sans-serif;font-size:13px;min-width:240px;max-width:320px'>
         <div style='background:{cor};color:white;padding:6px 10px;border-radius:4px;
@@ -234,8 +250,8 @@ def _popup_html(row: pd.Series, clima: dict | None, ss_lista: list | None = None
         <div style='font-size:10px;color:#888;margin-bottom:6px;padding-left:2px'>
             Status referente à OS de inspeção
         </div>
-        <b>OS:</b> {_safe(row.get('DESC_NUMERO_OS'))} &nbsp;|&nbsp; <b>Ativo:</b> {_safe(row.get('COD_ATIVO'))}<br>
-        <b>Torre:</b> {_safe(row.get('NUM_TORRE'))} &nbsp;|&nbsp; <b>Criticidade:</b> {_safe(row.get('CRITICIDADE'))}<br>
+        <b>OS:</b> {os_display} &nbsp;|&nbsp; <b>Ativo:</b> {_safe(row.get('COD_ATIVO'))}<br>
+        {_cod_ss_popup}<b>Torre:</b> {_safe(row.get('NUM_TORRE'))} &nbsp;|&nbsp; <b>Criticidade:</b> {_safe(row.get('CRITICIDADE'))}<br>
         <b>Empresa:</b> {_safe(row.get('SIGLA_EMPRESA', row.get('EMPRESA')))}<br>
         <b>Instalação:</b> {_safe(row.get('INSTALACAO'))}<br>
         <b>Data Limite:</b> {data_limite}<br>
