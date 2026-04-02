@@ -513,7 +513,76 @@ def load_ss_por_empresa(
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_ss_por_ativos(
+def load_torres_com_ss_abertas(
+    empresa:    str | None = None,
+    instalacao: str | None = None,
+    _sid: str = "",
+) -> pd.DataFrame:
+    """
+    Retorna torres que possuem SS de nível 1 ou 2 em aberto,
+    enriquecidas com coordenadas e dados de criticidade.
+    Usada para garantir que essas torres sejam incluídas na rota de inspeção.
+
+    Colunas retornadas:
+        COD_ATIVO, NUM_TORRE, LATITUDE, LONGITUDE,
+        EMPRESA, INSTALACAO, CRITICIDADE_MIN,
+        QTD_SS_N1N2, NIVEL_MIN_SS, PIOR_SALDO_DIAS, FL_ATRASADO
+    """
+    where_clauses = [
+        "T.LATITUDE IS NOT NULL",
+        "T.LONGITUDE IS NOT NULL",
+        "SS.NIVEL_CRITICIDADE IN (1, 2)",
+    ]
+    params: list = []
+
+    if empresa:
+        where_clauses.append("T.EMPRESA = ?")
+        params.append(empresa)
+    if instalacao:
+        where_clauses.append("T.INSTALACAO = ?")
+        params.append(instalacao)
+
+    where = " AND ".join(where_clauses)
+
+    query = f"""
+        SELECT
+            T.COD_ATIVO,
+            T.NUM_TORRE,
+            T.LATITUDE,
+            T.LONGITUDE,
+            T.EMPRESA,
+            T.INSTALACAO,
+            T.CRITICIDADE_MIN,
+            COUNT(SS.COD_SS)                AS QTD_SS_N1N2,
+            MIN(SS.NIVEL_CRITICIDADE)       AS NIVEL_MIN_SS,
+            MIN(SS.SALDO_DIAS)              AS PIOR_SALDO_DIAS,
+            MAX(CASE WHEN SS.SALDO_DIAS < 0 THEN 1 ELSE 0 END) AS FL_ATRASADO
+        FROM VW_TORRES_COM_CRITICIDADE T
+        INNER JOIN VW_SS_TRATADA SS
+            ON SS.COD_ATIVO = T.COD_ATIVO
+        WHERE {where}
+        GROUP BY
+            T.COD_ATIVO, T.NUM_TORRE, T.LATITUDE, T.LONGITUDE,
+            T.EMPRESA, T.INSTALACAO, T.CRITICIDADE_MIN
+        ORDER BY
+            MIN(SS.NIVEL_CRITICIDADE) ASC,
+            MIN(SS.SALDO_DIAS) ASC
+    """
+
+    with _build_connection() as conn:
+        df = pd.read_sql(query, conn, params=params if params else None)
+
+    for col in ["LATITUDE", "LONGITUDE", "PIOR_SALDO_DIAS"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in ["QTD_SS_N1N2", "NIVEL_MIN_SS", "CRITICIDADE_MIN", "FL_ATRASADO"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+    return df.dropna(subset=["LATITUDE", "LONGITUDE"]).reset_index(drop=True)
+
+
+
     cod_ativos: tuple[str, ...],
     _sid: str = "",
 ) -> pd.DataFrame:
