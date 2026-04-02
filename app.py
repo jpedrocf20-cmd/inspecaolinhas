@@ -19,7 +19,7 @@ from services.database import (
     iniciar_device_flow, concluir_login, is_authenticated,
     tentar_login_silencioso, logout,
     load_inspecoes_consolidadas, get_filter_options,
-    load_torres_por_instalacao, load_ss_por_ativos, sid_atual,
+    load_torres_por_instalacao, load_ss_por_ativos, load_ss_por_empresa, sid_atual,
 )
 from services.weather import get_weather, get_forecast_5d, weather_badge
 from components.mapa  import build_map
@@ -819,194 +819,256 @@ As SS registram **defeitos existentes** em torres de transmissão.
 
 # ── TAB SS POR EMPRESA ──
 with tab_ss_empresa:
-    st.markdown("#### 📊 SS Atrasadas por Empresa e Instalação")
+    st.markdown("#### 📊 SS por Empresa e Instalação — Painel de Apoio")
     st.caption(
-        "Esta aba é independente dos filtros do sidebar. "
-        "Use-a como **painel de apoio** para identificar quais empresas e instalações "
-        "têm mais SS em aberto (níveis 1 e 2) e SS atrasadas — e então aplique esses filtros na sidebar para gerar a rota."
+        "Painel independente dos filtros do sidebar. "
+        "Use-o para identificar quais empresas e instalações concentram mais SS abertas (N1–N2) e atrasadas, "
+        "e então aplique esses filtros na sidebar para gerar a rota priorizada."
     )
 
-    if df_ss is not None and not df_ss.empty:
-        df_ss_emp = df_ss.copy()
+    # ── Filtros próprios desta aba ──────────────────────────────────────
+    with st.expander("🔍 Filtros", expanded=True):
+        col_fe, col_fi, col_fn, col_fb = st.columns([1, 1, 1, 1])
 
-        # Garantir colunas necessárias
-        tem_empresa    = "SIGLA_EMPRESA" in df_ss_emp.columns
-        tem_instalacao = "INSTALACAO" in df_ss_emp.columns
-        tem_nivel      = "NIVEL_SS" in df_ss_emp.columns
-        tem_status     = "STATUS_PRAZO" in df_ss_emp.columns or "STATUS_SS" in df_ss_emp.columns
+        with col_fe:
+            # Opções de empresa vindas do cache de filtros (mesma fonte do sidebar, mas independente)
+            try:
+                _opcoes_emp = get_filter_options(_sid=sid_atual())
+                _empresas_ss = ["Todas"] + _opcoes_emp["empresas"]
+                _inst_por_emp = _opcoes_emp["instalacoes_por_empresa"]
+            except Exception:
+                _empresas_ss = ["Todas"]
+                _inst_por_emp = {}
+            ss_emp_sel = st.selectbox("Empresa", _empresas_ss, key="sse_empresa")
 
-        col_empresa    = "SIGLA_EMPRESA" if tem_empresa else None
-        col_instalacao = "INSTALACAO"    if tem_instalacao else None
+        with col_fi:
+            if ss_emp_sel != "Todas":
+                _inst_opts = ["Todas"] + _inst_por_emp.get(ss_emp_sel, [])
+            else:
+                _inst_opts = ["Todas"] + sorted({i for lst in _inst_por_emp.values() for i in lst})
+            ss_ins_sel = st.selectbox("Instalação", _inst_opts, key="sse_instalacao")
 
-        # Detectar coluna de status de prazo
-        col_status_prazo = None
-        if "STATUS_PRAZO" in df_ss_emp.columns:
-            col_status_prazo = "STATUS_PRAZO"
-        elif "STATUS_SS" in df_ss_emp.columns:
-            col_status_prazo = "STATUS_SS"
+        with col_fn:
+            ss_nivel_max = st.selectbox(
+                "Criticidade máxima",
+                [1, 2, 3, 4, 5, 6],
+                index=1,
+                format_func=lambda n: f"Nível 1 a {n}",
+                key="sse_nivel_max",
+            )
 
-        # ── Resumo por empresa ──────────────────────────────────
-        if col_empresa:
-            grp_cols = [col_empresa]
-            if col_instalacao:
-                grp_cols.append(col_instalacao)
+        with col_fb:
+            st.markdown("<br>", unsafe_allow_html=True)
+            buscar_ss_emp = st.button("🔎 Buscar SS", type="primary", key="sse_buscar")
 
-            agg = df_ss_emp.groupby(grp_cols).agg(
-                Total_SS=("COD_SS" if "COD_SS" in df_ss_emp.columns else df_ss_emp.columns[0], "count"),
+    # ── Inicializa estado local ──────────────────────────────────────────
+    if "df_ss_empresa" not in st.session_state:
+        st.session_state["df_ss_empresa"] = None
+    if buscar_ss_emp:
+        with st.spinner("🔄 Carregando SS + dados de torres..."):
+            try:
+                st.session_state["df_ss_empresa"] = load_ss_por_empresa(
+                    empresa    = None if ss_emp_sel == "Todas" else ss_emp_sel,
+                    instalacao = None if ss_ins_sel == "Todas" else ss_ins_sel,
+                    nivel_max  = ss_nivel_max,
+                    _sid       = sid_atual(),
+                )
+            except Exception as e:
+                st.error(f"❌ Erro ao carregar SS: {e}")
+                st.session_state["df_ss_empresa"] = None
+
+    df_sse = st.session_state.get("df_ss_empresa")
+
+    if df_sse is not None and not df_sse.empty:
+
+        # ── Métricas rápidas ─────────────────────────────────────────────
+        _n_empresas = df_sse["EMPRESA"].nunique() if "EMPRESA" in df_sse.columns else "—"
+        _n_inst     = df_sse["INSTALACAO"].nunique() if "INSTALACAO" in df_sse.columns else "—"
+        _n_ss       = df_sse["COD_SS"].nunique() if "COD_SS" in df_sse.columns else len(df_sse)
+        _n_torres   = df_sse["COD_ATIVO"].nunique() if "COD_ATIVO" in df_sse.columns else "—"
+        _atr_mask   = df_sse["STATUS_PRAZO"].str.upper().str.startswith("ATRASADO", na=False) if "STATUS_PRAZO" in df_sse.columns else pd.Series(False, index=df_sse.index)
+        _n_atr      = int(_atr_mask.sum())
+        _n1_count   = int((df_sse["NIVEL_CRITICIDADE"] == 1).sum()) if "NIVEL_CRITICIDADE" in df_sse.columns else "—"
+
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1.metric("🏢 Empresas",      _n_empresas)
+        m2.metric("📍 Instalações",   _n_inst)
+        m3.metric("🗼 Torres",        _n_torres)
+        m4.metric("📋 SS abertas",    _n_ss)
+        m5.metric("🔴 SS Nível 1",   _n1_count)
+        m6.metric("⏰ SS Atrasadas",  _n_atr)
+
+        st.divider()
+
+        # ── Escolha de visualização ──────────────────────────────────────
+        vis_col, ord_col, _ = st.columns([1, 1, 2])
+        with vis_col:
+            vis_mode = st.radio(
+                "Visualização",
+                ["📊 Resumo por instalação", "📋 SS individuais"],
+                horizontal=True,
+                key="sse_vis",
+            )
+        with ord_col:
+            ord_mode = st.selectbox(
+                "Ordenar por",
+                ["SS Atrasadas ↓", "SS Nível 1 ↓", "Total SS ↓", "Pior saldo (dias) ↑"],
+                key="sse_ord",
+            )
+
+        # ── MODO RESUMO ──────────────────────────────────────────────────
+        if vis_mode == "📊 Resumo por instalação":
+            grp = ["EMPRESA", "INSTALACAO"]
+            grp = [c for c in grp if c in df_sse.columns]
+
+            agg = df_sse.groupby(grp).agg(
+                Torres      = ("COD_ATIVO",          "nunique"),
+                Total_SS    = ("COD_SS",              "nunique"),
+                N1          = ("NIVEL_CRITICIDADE",   lambda x: (x == 1).sum()),
+                N2          = ("NIVEL_CRITICIDADE",   lambda x: (x == 2).sum()),
+                Atrasadas   = ("STATUS_PRAZO",        lambda x: x.str.upper().str.startswith("ATRASADO", na=False).sum()),
+                Pior_Saldo  = ("SALDO_DIAS",          "min"),
+                Max_Aberto  = ("DIAS_EM_ABERTO",      "max"),
             ).reset_index()
 
-            if tem_nivel:
-                n1 = df_ss_emp[df_ss_emp["NIVEL_SS"] == 1].groupby(grp_cols).size().reset_index(name="SS_Nivel_1")
-                n2 = df_ss_emp[df_ss_emp["NIVEL_SS"] == 2].groupby(grp_cols).size().reset_index(name="SS_Nivel_2")
-                agg = agg.merge(n1, on=grp_cols, how="left").merge(n2, on=grp_cols, how="left")
-                agg["SS_Nivel_1"] = agg["SS_Nivel_1"].fillna(0).astype(int)
-                agg["SS_Nivel_2"] = agg["SS_Nivel_2"].fillna(0).astype(int)
+            # Renomear
+            agg = agg.rename(columns={
+                "EMPRESA": "Empresa", "INSTALACAO": "Instalação",
+                "Torres": "Torres", "Total_SS": "Total SS",
+                "N1": "🔴 N1", "N2": "🟡 N2",
+                "Atrasadas": "⏰ Atrasadas",
+                "Pior_Saldo": "Pior Saldo (d)",
+                "Max_Aberto": "Máx. Dias Aberto",
+            })
 
-            if col_status_prazo:
-                atrasadas = (
-                    df_ss_emp[df_ss_emp[col_status_prazo].str.upper().str.contains("ATRAS", na=False)]
-                    .groupby(grp_cols).size().reset_index(name="SS_Atrasadas")
-                )
-                agg = agg.merge(atrasadas, on=grp_cols, how="left")
-                agg["SS_Atrasadas"] = agg["SS_Atrasadas"].fillna(0).astype(int)
+            # Ordenação
+            sort_map = {
+                "SS Atrasadas ↓":       ("⏰ Atrasadas",     False),
+                "SS Nível 1 ↓":        ("🔴 N1",            False),
+                "Total SS ↓":           ("Total SS",          False),
+                "Pior saldo (dias) ↑":  ("Pior Saldo (d)",   True),
+            }
+            sort_col, sort_asc = sort_map.get(ord_mode, ("⏰ Atrasadas", False))
+            agg = agg.sort_values(sort_col, ascending=sort_asc).reset_index(drop=True)
 
-            # Ordenar: mais SS atrasadas primeiro, depois total
-            sort_cols = []
-            if "SS_Atrasadas" in agg.columns:
-                sort_cols.append("SS_Atrasadas")
-            if tem_nivel:
-                sort_cols.append("SS_Nivel_1")
-            sort_cols.append("Total_SS")
-            agg = agg.sort_values(sort_cols, ascending=False).reset_index(drop=True)
-
-            # Renomear para exibição
-            rename_map = {}
-            if col_empresa:    rename_map[col_empresa]    = "Empresa"
-            if col_instalacao: rename_map[col_instalacao] = "Instalação"
-            agg = agg.rename(columns=rename_map)
-
-            # ── Métricas rápidas ──
-            m1, m2, m3, m4 = st.columns(4)
-            empresas_uniq = df_ss_emp[col_empresa].nunique() if col_empresa else "—"
-            insts_uniq    = df_ss_emp[col_instalacao].nunique() if col_instalacao else "—"
-            total_ss      = len(df_ss_emp)
-            ss_atr_total  = int((df_ss_emp[col_status_prazo].str.upper().str.contains("ATRAS", na=False)).sum()) if col_status_prazo else "—"
-
-            m1.metric("🏢 Empresas", empresas_uniq)
-            m2.metric("📍 Instalações", insts_uniq)
-            m3.metric("📋 SS Totais (N1+N2)", total_ss)
-            m4.metric("🔴 SS Atrasadas", ss_atr_total)
-
-            st.divider()
-
-            # ── Filtro de empresa (independente do sidebar) ──
-            col_fe, col_fi, col_fv = st.columns([1, 1, 2])
-            with col_fe:
-                emp_opts = ["Todas"] + sorted(df_ss_emp[col_empresa].dropna().unique().tolist())
-                emp_f    = st.selectbox("Filtrar empresa", emp_opts, key="ss_emp_filtro_empresa")
-            with col_fi:
-                if col_instalacao and emp_f != "Todas":
-                    ins_opts = ["Todas"] + sorted(
-                        df_ss_emp[df_ss_emp[col_empresa] == emp_f][col_instalacao].dropna().unique().tolist()
-                    )
-                elif col_instalacao:
-                    ins_opts = ["Todas"] + sorted(df_ss_emp[col_instalacao].dropna().unique().tolist())
-                else:
-                    ins_opts = ["Todas"]
-                ins_f = st.selectbox("Filtrar instalação", ins_opts, key="ss_emp_filtro_inst")
-            with col_fv:
-                vis_opts = ["Resumo por empresa/instalação", "SS individuais"]
-                vis_f    = st.selectbox("Visualização", vis_opts, key="ss_emp_visao")
-
-            # Aplicar filtros locais
-            agg_filtrado = agg.copy()
-            if emp_f != "Todas":
-                agg_filtrado = agg_filtrado[agg_filtrado["Empresa"] == emp_f]
-            if ins_f != "Todas" and col_instalacao:
-                agg_filtrado = agg_filtrado[agg_filtrado["Instalação"] == ins_f]
-
-            if vis_f == "Resumo por empresa/instalação":
-                # Colorir atrasadas
-                def _style_ss_emp(v):
-                    if isinstance(v, (int, float)) and v > 0:
+            def _style_resumo(val):
+                try:
+                    v = float(val)
+                    if v > 0:
                         return "background:#FF2D2D22;color:#FF6B6B;font-weight:bold"
-                    return ""
+                except Exception:
+                    pass
+                return ""
 
-                styled_agg = agg_filtrado.style
-                if "SS_Atrasadas" in agg_filtrado.columns:
-                    styled_agg = styled_agg.map(_style_ss_emp, subset=["SS_Atrasadas"])
-                if "SS_Nivel_1" in agg_filtrado.columns:
-                    styled_agg = styled_agg.map(_style_ss_emp, subset=["SS_Nivel_1"])
+            def _style_saldo(val):
+                try:
+                    v = float(val)
+                    if v < 0:
+                        return "background:#FF2D2D22;color:#FF6B6B;font-weight:bold"
+                    if v <= 7:
+                        return "background:#FFD70022;color:#FFD700"
+                except Exception:
+                    pass
+                return ""
 
-                st.dataframe(styled_agg, use_container_width=True, hide_index=True)
+            styled_agg = agg.style \
+                .map(_style_resumo, subset=["⏰ Atrasadas", "🔴 N1"]) \
+                .map(_style_saldo,  subset=["Pior Saldo (d)"])
 
-                st.info(
-                    "💡 **Como usar:** Identifique as empresas/instalações com mais SS atrasadas ou de nível 1, "
-                    "depois vá ao **sidebar** e selecione-as nos filtros de Empresa e Instalação para gerar a rota priorizada."
-                )
+            st.dataframe(styled_agg, use_container_width=True, hide_index=True)
 
-            else:
-                # Exibir SS individuais filtradas
-                df_ind = df_ss_emp.copy()
-                if emp_f != "Todas" and col_empresa:
-                    df_ind = df_ind[df_ind[col_empresa] == emp_f]
-                if ins_f != "Todas" and col_instalacao:
-                    df_ind = df_ind[df_ind[col_instalacao] == ins_f]
+            st.info(
+                "💡 **Como usar:** Identifique as instalações mais críticas acima, "
+                "depois vá ao **sidebar → Filtros** e selecione a Empresa e Instalação "
+                "correspondente para gerar a rota priorizada."
+            )
 
-                colunas_ind = [c for c in [
-                    "COD_SS", col_empresa, col_instalacao, "COD_ATIVO",
-                    "NIVEL_SS", "TIPO_DEFEITO", "DESC_SS",
-                    col_status_prazo, "DATA_ABERTURA", "DIAS_EM_ABERTO"
-                ] if c and c in df_ind.columns]
-
-                if "DATA_ABERTURA" in df_ind.columns:
-                    df_ind = df_ind.copy()
-                    df_ind["DATA_ABERTURA"] = pd.to_datetime(
-                        df_ind["DATA_ABERTURA"], errors="coerce"
-                    ).dt.strftime("%d/%m/%Y")
-
-                def _cor_ind(val):
-                    try:
-                        if int(val) == 1:
-                            return "background:#FF2D2D22;color:#FF6B6B;font-weight:bold"
-                        if int(val) == 2:
-                            return "background:#FFD70022;color:#FFD700"
-                    except Exception:
-                        if "ATRAS" in str(val).upper():
-                            return "background:#FF2D2D22;color:#FF6B6B;font-weight:bold"
-                    return ""
-
-                styled_ind = df_ind[colunas_ind].style
-                if "NIVEL_SS" in colunas_ind:
-                    styled_ind = styled_ind.map(_cor_ind, subset=["NIVEL_SS"])
-                if col_status_prazo and col_status_prazo in colunas_ind:
-                    styled_ind = styled_ind.map(_cor_ind, subset=[col_status_prazo])
-
-                st.dataframe(styled_ind, use_container_width=True, hide_index=True)
-
+        # ── MODO SS INDIVIDUAIS ──────────────────────────────────────────
         else:
-            st.warning("Coluna SIGLA_EMPRESA não encontrada nas SS carregadas.")
+            # Filtros adicionais rápidos dentro da aba
+            fc1, fc2, fc3 = st.columns([1, 1, 2])
+            with fc1:
+                nv_opts = ["Todos"] + sorted(df_sse["NIVEL_CRITICIDADE"].dropna().unique().astype(int).tolist())
+                nv_f = st.selectbox("Nível", nv_opts, key="sse_ind_nivel",
+                                    format_func=lambda v: f"Nível {v}" if v != "Todos" else "Todos")
+            with fc2:
+                st_opts = ["Todos", "Atrasadas", "No prazo", "Sem SLA"]
+                st_f = st.selectbox("Status prazo", st_opts, key="sse_ind_status")
 
-        # ── Exportar ──
-        buf_emp = io.BytesIO()
-        _export_cols = [c for c in df_ss_emp.columns]
-        df_ss_emp[_export_cols].to_excel(buf_emp, index=False, engine="openpyxl")
+            df_ind = df_sse.copy()
+            if nv_f != "Todos":
+                df_ind = df_ind[df_ind["NIVEL_CRITICIDADE"] == int(nv_f)]
+            if st_f == "Atrasadas":
+                df_ind = df_ind[df_ind["STATUS_PRAZO"].str.upper().str.startswith("ATRASADO", na=False)]
+            elif st_f == "No prazo":
+                df_ind = df_ind[df_ind["STATUS_PRAZO"].str.upper().str.startswith("FALTAM", na=False)]
+            elif st_f == "Sem SLA":
+                df_ind = df_ind[df_ind["STATUS_PRAZO"].str.upper() == "SEM SLA"]
+
+            # Ordenação
+            sort_map_ind = {
+                "SS Atrasadas ↓":      ("SALDO_DIAS",          True),
+                "SS Nível 1 ↓":       ("NIVEL_CRITICIDADE",   True),
+                "Total SS ↓":          ("DIAS_EM_ABERTO",      False),
+                "Pior saldo (dias) ↑": ("SALDO_DIAS",          True),
+            }
+            sc, sa = sort_map_ind.get(ord_mode, ("SALDO_DIAS", True))
+            if sc in df_ind.columns:
+                df_ind = df_ind.sort_values(sc, ascending=sa)
+
+            # Colunas para exibição
+            _cols_ind = [c for c in [
+                "EMPRESA", "INSTALACAO", "NUM_TORRE", "COD_ATIVO",
+                "COD_SS", "NIVEL_CRITICIDADE", "codigo_do_defeito",
+                "descricao_do_defeito", "STATUS_PRAZO", "SALDO_DIAS",
+                "DIAS_EM_ABERTO", "DATA_REQUISICAO", "DATA_LIMITE",
+                "ESTADO_SS", "NOME_PRIORIDADE",
+            ] if c in df_ind.columns]
+
+            # Formatar datas
+            for dc in ["DATA_REQUISICAO", "DATA_LIMITE"]:
+                if dc in df_ind.columns:
+                    df_ind[dc] = pd.to_datetime(df_ind[dc], errors="coerce").dt.strftime("%d/%m/%Y")
+
+            def _cor_ind(val):
+                try:
+                    n = int(val)
+                    if n == 1: return "background:#FF2D2D22;color:#FF6B6B;font-weight:bold"
+                    if n == 2: return "background:#FFD70022;color:#FFD700"
+                except Exception:
+                    s = str(val).upper()
+                    if s.startswith("ATRASADO"): return "background:#FF2D2D22;color:#FF6B6B;font-weight:bold"
+                    if s.startswith("FALTAM"):
+                        try:
+                            dias = int(s.split()[1])
+                            if dias <= 7: return "background:#FFD70022;color:#FFD700"
+                        except Exception:
+                            pass
+                return ""
+
+            styled_ind = df_ind[_cols_ind].style
+            if "NIVEL_CRITICIDADE" in _cols_ind:
+                styled_ind = styled_ind.map(_cor_ind, subset=["NIVEL_CRITICIDADE"])
+            if "STATUS_PRAZO" in _cols_ind:
+                styled_ind = styled_ind.map(_cor_ind, subset=["STATUS_PRAZO"])
+
+            st.dataframe(styled_ind, use_container_width=True, hide_index=True)
+
+        # ── Export ───────────────────────────────────────────────────────
+        st.divider()
+        buf_sse = io.BytesIO()
+        df_sse.to_excel(buf_sse, index=False, engine="openpyxl")
         st.download_button(
-            "📥 Exportar SS por Empresa (Excel)", buf_emp.getvalue(),
+            "📥 Exportar Excel", buf_sse.getvalue(),
             "ss_por_empresa.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="dl_ss_empresa",
         )
 
-    elif df_consolidado is not None:
-        st.info(
-            "Nenhuma SS carregada ainda. Clique em **Gerar Rota Otimizada** para carregar as SS e ver este painel."
-        )
+    elif df_sse is not None and df_sse.empty:
+        st.info("Nenhuma SS encontrada com os critérios selecionados.")
     else:
-        st.info(
-            "👈 Configure os filtros no sidebar e clique em **Gerar Rota Otimizada** para carregar as SS. "
-            "Este painel funciona com os dados já carregados, independente do filtro ativo."
-        )
+        st.info("👆 Selecione os filtros acima e clique em **Buscar SS** para carregar o painel.")
 
 
 # ── TAB CLIMA 5 DIAS ──
