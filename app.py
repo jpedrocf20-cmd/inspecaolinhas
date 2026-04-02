@@ -15,7 +15,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from services.database import (
+from services.database.py import (
     iniciar_device_flow, concluir_login, is_authenticated,
     tentar_login_silencioso, logout,
     load_inspecoes_consolidadas, get_filter_options,
