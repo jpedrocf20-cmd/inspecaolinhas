@@ -19,7 +19,8 @@ from services.database import (
     iniciar_device_flow, concluir_login, is_authenticated,
     tentar_login_silencioso, logout,
     load_inspecoes_consolidadas, get_filter_options,
-    load_torres_por_instalacao, load_ss_por_ativos, load_ss_por_empresa, sid_atual,
+    load_torres_por_instalacao, load_ss_por_ativos, load_ss_por_empresa,
+    load_torres_com_ss_abertas, sid_atual,
 )
 from services.weather import get_weather, get_forecast_5d, weather_badge
 from components.mapa  import build_map
@@ -255,6 +256,7 @@ _defaults = {
     "df_rota":        None,
     "df_ss":          None,
     "ss_map":         {},
+    "ss_abertas_set": set(),
     "weather_map":    {},
     "resumo":         {},
     "fabric_authed":  False,
@@ -436,6 +438,71 @@ if gerar:
     # 2. Seleção de OS com modo cluster
     df_selecionado = selecionar_os(df_priorizado, max_os, forcar_atrasadas)
 
+    # 2b. Carregar torres com SS N1/N2 em aberto e garantir que entram na rota
+    df_torres_ss_abertas = pd.DataFrame()
+    with st.spinner("📋 Buscando torres com SS N1/N2 em aberto..."):
+        try:
+            df_torres_ss_abertas = load_torres_com_ss_abertas(
+                empresa    = None if empresa_sel    == "Todas" else empresa_sel,
+                instalacao = None if instalacao_sel == "Todas" else instalacao_sel,
+                _sid       = sid_atual(),
+            )
+        except Exception as e:
+            st.warning(f"⚠️ Não foi possível carregar torres com SS abertas: {e}")
+
+    # Marcar torres com SS N1/N2 no df_priorizado para destaque no mapa
+    ss_abertas_set: set = set()
+    if not df_torres_ss_abertas.empty and "COD_ATIVO" in df_torres_ss_abertas.columns:
+        ss_abertas_set = set(df_torres_ss_abertas["COD_ATIVO"].dropna().unique())
+
+    df_priorizado["TEM_SS_ABERTA"] = df_priorizado["COD_ATIVO"].isin(ss_abertas_set)
+
+    # Incluir torres com SS N1/N2 que não estão na seleção atual
+    if not df_torres_ss_abertas.empty:
+        ativos_ja_selecionados = set(df_selecionado["COD_ATIVO"].dropna().unique())
+        torres_faltantes_ss = df_torres_ss_abertas[
+            ~df_torres_ss_abertas["COD_ATIVO"].isin(ativos_ja_selecionados)
+        ]
+
+        if not torres_faltantes_ss.empty:
+            # Enriquecer as torres com SS com colunas mínimas para a rota
+            # (STATUS_PRAZO=SS_ABERTA, PRIORIDADE=2 se N1, 3 se N2)
+            rows_extras = []
+            for _, tr in torres_faltantes_ss.iterrows():
+                nivel_min = int(tr.get("NIVEL_MIN_SS", 2))
+                prioridade_ss = 2 if nivel_min == 1 else 3
+                row_extra = {
+                    "COD_ATIVO"     : tr["COD_ATIVO"],
+                    "NUM_TORRE"     : tr.get("NUM_TORRE", "–"),
+                    "LATITUDE"      : float(tr["LATITUDE"]),
+                    "LONGITUDE"     : float(tr["LONGITUDE"]),
+                    "EMPRESA"       : tr.get("EMPRESA", "–"),
+                    "INSTALACAO"    : tr.get("INSTALACAO", "–"),
+                    "SIGLA_EMPRESA" : tr.get("EMPRESA", "–"),
+                    "CRITICIDADE"   : int(tr.get("CRITICIDADE_MIN", 2)),
+                    "STATUS_PRAZO"  : f"SS N{nivel_min} ABERTA",
+                    "PRIORIDADE"    : prioridade_ss,
+                    "SCORE"         : 70.0 if nivel_min == 1 else 50.0,
+                    "SCORE_URG"     : 70.0 if nivel_min == 1 else 50.0,
+                    "CLUSTER"       : 0,
+                    "DIAS_ATRASO"   : 0,
+                    "DESC_NUMERO_OS": f"SS-{tr.get('COD_ATIVO', '')}",
+                    "TEM_SS_ABERTA" : True,
+                }
+                rows_extras.append(row_extra)
+
+            if rows_extras:
+                df_extras = pd.DataFrame(rows_extras)
+                df_selecionado = pd.concat([df_selecionado, df_extras], ignore_index=True)
+                df_selecionado["TEM_SS_ABERTA"] = df_selecionado["COD_ATIVO"].isin(ss_abertas_set)
+                n_adicionadas = len(rows_extras)
+                st.info(
+                    f"🗼 **{n_adicionadas} torre(s) com SS N1/N2 em aberto** foram adicionadas "
+                    f"automaticamente à rota e estão destacadas no mapa com anel laranja."
+                )
+    else:
+        df_selecionado["TEM_SS_ABERTA"] = df_selecionado["COD_ATIVO"].isin(ss_abertas_set)
+
     # 3. Consulta climática das OS candidatas (apoio — não filtra)
     weather_map: dict = {}
     with st.spinner(f"🌦️ Consultando clima para {len(df_selecionado)} OS..."):
@@ -448,6 +515,9 @@ if gerar:
 
     # 4. Otimização da rota (routing baseado em OS + coords via COD_ATIVO)
     df_rota = otimizar_rota(df_selecionado, ponto_partida, usar_dois_opt=usar_dois_opt)
+    # Propagar flag TEM_SS_ABERTA para df_rota
+    if "TEM_SS_ABERTA" not in df_rota.columns:
+        df_rota["TEM_SS_ABERTA"] = df_rota["COD_ATIVO"].isin(ss_abertas_set)
 
     # 5. Carregar SS (contexto operacional — não afeta prioridade/rota)
     df_ss  = pd.DataFrame()
@@ -472,14 +542,17 @@ if gerar:
             ss_atrasadas = int((pd.to_numeric(df_ss["DIAS_EM_ABERTO"], errors="coerce").fillna(0) > 0).sum())
 
     _resumo = resumo_rota(df_rota)
-    _resumo["ss_atrasadas"] = ss_atrasadas
+    _resumo["ss_atrasadas"]     = ss_atrasadas
+    _resumo["torres_ss_abertas"] = len(ss_abertas_set)
 
-    st.session_state.df_consolidado = df_priorizado
-    st.session_state.df_rota        = df_rota
-    st.session_state.df_ss          = df_ss
-    st.session_state.ss_map         = ss_map
-    st.session_state.weather_map    = weather_map
-    st.session_state.resumo         = _resumo
+    st.session_state.df_consolidado  = df_priorizado
+    st.session_state.df_rota         = df_rota
+    st.session_state.df_ss           = df_ss
+    st.session_state.ss_map          = ss_map
+    st.session_state.weather_map     = weather_map
+    st.session_state.resumo          = _resumo
+    st.session_state.ss_abertas_set  = ss_abertas_set
+
 
 
 # ──────────────────────────────────────────────
@@ -489,18 +562,20 @@ df_consolidado = st.session_state.df_consolidado
 df_rota        = st.session_state.df_rota
 df_ss          = st.session_state.df_ss
 ss_map         = st.session_state.ss_map
+ss_abertas_set = st.session_state.get("ss_abertas_set", set())
 weather_map    = st.session_state.weather_map
 resumo         = st.session_state.resumo
 
 if resumo:
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-    c1.metric("📋 OS na rota",        resumo["total_os"])
-    c2.metric("🔴 OS Atrasadas",       resumo["os_atrasadas"])
-    c3.metric("⚠️ SS Atrasadas",       resumo.get("ss_atrasadas", "—"))
-    c4.metric("📏 Distância total",    f"{resumo['distancia_total']} km")
-    c5.metric("📍 Dist. média/salto",  f"{resumo.get('distancia_media', '-')} km")
-    c6.metric("🗂️ Clusters",           resumo.get("n_clusters", "-"))
-    c7.metric("📊 Score médio",        f"{resumo['score_medio']}%")
+    c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(8)
+    c1.metric("📋 OS na rota",          resumo["total_os"])
+    c2.metric("🔴 OS Atrasadas",         resumo["os_atrasadas"])
+    c3.metric("⚠️ SS Atrasadas",         resumo.get("ss_atrasadas", "—"))
+    c4.metric("🗼 Torres c/ SS Abertas", resumo.get("torres_ss_abertas", "—"))
+    c5.metric("📏 Distância total",      f"{resumo['distancia_total']} km")
+    c6.metric("📍 Dist. média/salto",    f"{resumo.get('distancia_media', '-')} km")
+    c7.metric("🗂️ Clusters",             resumo.get("n_clusters", "-"))
+    c8.metric("📊 Score médio",          f"{resumo['score_medio']}%")
     st.divider()
 
 tab_mapa, tab_rota, tab_os, tab_ss, tab_ss_empresa, tab_clima = st.tabs([
@@ -517,7 +592,7 @@ tab_mapa, tab_rota, tab_os, tab_ss, tab_ss_empresa, tab_clima = st.tabs([
 with tab_mapa:
     if df_consolidado is not None and not df_consolidado.empty:
         _hash = f"{len(df_rota)}_{df_rota['COD_ATIVO'].iloc[0] if df_rota is not None and not df_rota.empty else 'x'}"
-        mapa  = build_map(df=df_consolidado, df_rota=df_rota, weather_map=weather_map, ss_map=ss_map)
+        mapa  = build_map(df=df_consolidado, df_rota=df_rota, weather_map=weather_map, ss_map=ss_map, ss_abertas_set=ss_abertas_set)
         st_folium(mapa, use_container_width=True, height=580,
                   key=f"mapa_{_hash}", returned_objects=[])
     else:
@@ -1022,7 +1097,7 @@ with tab_ss_empresa:
                 "COD_SS", "NIVEL_CRITICIDADE", "codigo_do_defeito",
                 "descricao_do_defeito", "STATUS_PRAZO", "SALDO_DIAS",
                 "DIAS_EM_ABERTO", "DATA_REQUISICAO", "DATA_LIMITE",
-                "ESTADO_SS", "NOME_PRIORIDADE",
+                "ESTADO_SS", "NOME_PRIORIDADE", "TEXT_OBSERVACAO",
             ] if c in df_ind.columns]
 
             # Formatar datas
