@@ -618,7 +618,9 @@ def load_ss_por_ativos(
             SS.ESTADO_SS            AS STATUS_SS,
             SS.DATA_REQUISICAO      AS DATA_ABERTURA,
             SS.STATUS_PRAZO,
-            SS.DIAS_EM_ABERTO
+            SS.DIAS_EM_ABERTO,
+            SS.SALDO_DIAS,
+            SS.DATA_LIMITE
         FROM
             VW_SS_TRATADA SS
         WHERE
@@ -626,7 +628,7 @@ def load_ss_por_ativos(
             AND SS.NIVEL_CRITICIDADE IN (1, 2)
         ORDER BY
             SS.NIVEL_CRITICIDADE ASC,
-            SS.DATA_REQUISICAO DESC
+            SS.SALDO_DIAS ASC
     """
     with _build_connection() as conn:
         df = pd.read_sql(query, conn, params=list(cod_ativos))
@@ -634,11 +636,14 @@ def load_ss_por_ativos(
     for col_num in ["NIVEL_CRITICIDADE"]:
         if col_num in df.columns:
             df[col_num] = pd.to_numeric(df[col_num], errors="coerce").astype("Int64")
-    for col_dt in ["DATA_ABERTURA", "DATA_REQUISICAO"]:
+    for col_dt in ["DATA_ABERTURA", "DATA_REQUISICAO", "DATA_LIMITE"]:
         if col_dt in df.columns:
             df[col_dt] = pd.to_datetime(df[col_dt], errors="coerce")
     for col_num2 in ["DIAS_EM_ABERTO"]:
         if col_num2 in df.columns:
             df[col_num2] = pd.to_numeric(df[col_num2], errors="coerce").fillna(0).astype(int)
+    for col_num3 in ["SALDO_DIAS"]:
+        if col_num3 in df.columns:
+            df[col_num3] = pd.to_numeric(df[col_num3], errors="coerce")
 
     return df
