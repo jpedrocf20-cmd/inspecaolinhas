@@ -410,6 +410,109 @@ def load_torres_por_instalacao(
         return pd.read_sql(query, conn, params=params)
 
 @st.cache_data(ttl=300, show_spinner=False)
+def load_ss_por_empresa(
+    empresa:    str | None = None,
+    instalacao: str | None = None,
+    nivel_max:  int        = 2,
+    _sid: str = "",
+) -> pd.DataFrame:
+    """
+    Carrega SS (nível 1–N) com dados enriquecidos de empresa/instalação
+    via JOIN entre VW_SS_TRATADA e VW_TORRES_COM_CRITICIDADE.
+
+    Usada exclusivamente pela aba de apoio "SS por Empresa".
+    Independente dos filtros laterais — recebe parâmetros próprios.
+
+    Colunas retornadas:
+      Empresa, Instalação, NUM_TORRE, COD_ATIVO,
+      COD_SS, NIVEL_CRITICIDADE, codigo_do_defeito, descricao_do_defeito,
+      DATA_REQUISICAO, DATA_LIMITE, DIAS_EM_ABERTO, SALDO_DIAS, STATUS_PRAZO,
+      ESTADO_SS, NOME_PRIORIDADE, TEXT_OBSERVACAO,
+      -- da VW_TORRES_COM_CRITICIDADE (visão agregada da torre)
+      QTD_SS (total da torre), MAX_DIAS_ABERTO, PIOR_SALDO_DIAS, FL_ATRASADO
+    """
+    where_clauses: list[str] = []
+    params: list = []
+
+    if empresa:
+        where_clauses.append("T.EMPRESA = ?")
+        params.append(empresa)
+    if instalacao:
+        where_clauses.append("T.INSTALACAO = ?")
+        params.append(instalacao)
+
+    where_clauses.append(f"SS.NIVEL_CRITICIDADE <= ?")
+    params.append(nivel_max)
+
+    where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    query = f"""
+        SELECT
+            -- Identificação geográfica (da torre)
+            T.EMPRESA,
+            T.INSTALACAO,
+            T.NUM_TORRE,
+            T.LATITUDE,
+            T.LONGITUDE,
+
+            -- Indicadores agregados da torre
+            T.CRITICIDADE_MIN,
+            T.QTD_SS,
+            T.MAX_DIAS_ABERTO,
+            T.PIOR_SALDO_DIAS,
+            T.FL_ATRASADO,
+
+            -- Dados individuais da SS
+            SS.COD_SS,
+            SS.COD_ATIVO,
+            SS.NIVEL_CRITICIDADE,
+            SS.codigo_do_defeito,
+            SS.descricao_do_defeito,
+            SS.ESTADO_SS,
+            SS.NOME_PRIORIDADE,
+            SS.TEXT_OBSERVACAO,
+            SS.DATA_REQUISICAO,
+            SS.DATA_LIMITE,
+            SS.DIAS_EM_ABERTO,
+            SS.PRAZO_DIAS,
+            SS.SALDO_DIAS,
+            SS.STATUS_PRAZO
+
+        FROM VW_SS_TRATADA SS
+        INNER JOIN VW_TORRES_COM_CRITICIDADE T
+            ON SS.COD_ATIVO = T.COD_ATIVO
+
+        {where}
+
+        ORDER BY
+            T.EMPRESA,
+            T.INSTALACAO,
+            SS.NIVEL_CRITICIDADE ASC,
+            SS.SALDO_DIAS ASC   -- mais atrasadas primeiro
+    """
+
+    with _build_connection() as conn:
+        df = pd.read_sql(query, conn, params=params if params else None)
+
+    # Tipagem
+    for col in ["NIVEL_CRITICIDADE", "CRITICIDADE_MIN", "QTD_SS",
+                "MAX_DIAS_ABERTO", "FL_ATRASADO", "PRAZO_DIAS"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+    for col in ["SALDO_DIAS", "DIAS_EM_ABERTO"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in ["DATA_REQUISICAO", "DATA_LIMITE"]:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+    for col in ["LATITUDE", "LONGITUDE"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def load_ss_por_ativos(
     cod_ativos: tuple[str, ...],
     _sid: str = "",
